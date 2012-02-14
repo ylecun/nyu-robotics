@@ -1,0 +1,56 @@
+(libload "libimage/image-io")
+
+(de rovio-grab (user password ip)
+  (let ((f (popen (sprintf "curl -s http://%s:%s@%s/Jpeg/CamImg%d.jpg | %s JPEG:- -compress lossless -depth 8 - PPM:-" 
+			   user password ip (int (rand 0 1000)) @@*convert-cmd* ) "r")))
+    (when (not f) (error "couldn't open convert pipe file"))
+    (prog1 (pnm-fread-rgb f) (pclose f))))
+
+(de rovio-grab2 (ip)
+  (let ((f (popen (sprintf "curl -s http://%s/Jpeg/CamImg.jpg | djpeg -pnm" ip ) "r")))
+    (when (not f) (error "couldn't open convert pipe file"))
+    (prog1 (pnm-fread-rgb f) (pclose f))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(libload "jpeg/jpeg")
+
+;; open f with popen, read data into buffer,
+;; and decode into ubyte matrix m.
+;; return 0 on success, -1 on failure
+(de pipe-jpeg-to-idx (f buffer m)
+  ((-str-) f)
+  ((-idx1- (-ubyte-)) buffer)
+  ((-idx1- (-ubyte-)) m)
+  (let ((err 0)
+	(s (idx-dim buffer 0)))
+    ((-int-) err)
+    #{{long pos;
+       FILE *fp;
+       if ((fp = popen($f->data, "rb")) == NULL) {
+         $err = -1;
+       } else {
+         int n = 0;
+         unsigned char *p = IDX_PTR($buffer, unsigned char);
+         while ( ($err==0)&&((n = fread(p, 1, 1024, fp)) == 1024) ) {
+           p += 1024;
+           if ( (p + 1024) > $s ) { 
+             Midx_init_dim1($buffer,p+1024); 
+           }
+         }
+         fclose(fp);
+       }
+      } #}
+    (when (= err 0) (jpeg-decode buffer m))
+    err))
+
+(de rovio-grab3 (ip)
+  (let ((s (sprintf "curl -s http://%s:%s@%s/Jpeg/CamImg%d.jpg" 
+		    user password ip (int (rand 0 1000))))
+	(buffer (ubyte-matrix (* 640 480 3)))
+	(m (ubyte-matrix 480 640 3)))
+    (if (<> 0 (pipe-jpeg-to-idx s buffer m))
+	(when (not f) (error "couldn't read image from Rovio")))
+    m))
+
+  

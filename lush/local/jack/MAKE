@@ -1,0 +1,6 @@
+#!/bin/sh
+# http://www.dis-dot-dat.net/index.cgi?item=jacktuts/starting/invsimpleclient
+# gcc -o simple `pkg-config --cflags --libs jack` simple_client.c
+
+cc -o jackMiniSynth -ljack -lrt -lm -lc -lasound jackMiniSynth.c
+# cc -o jacktest -ljack -lrt -lm -lc -lasound jacktest.c

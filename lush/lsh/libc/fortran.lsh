@@ -1,0 +1,129 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; LUSH Lisp Universal Shell
+;;;   Copyright (C) 2002 Leon Bottou, Yann Le Cun, AT&T Corp, NECI.
+;;; Includes parts of TL3:
+;;;   Copyright (C) 1987-1999 Leon Bottou and Neuristique.
+;;; Includes selected parts of SN3.2:
+;;;   Copyright (C) 1991-2001 AT&T Corp.
+;;;
+;;; This program is free software; you can redistribute it and/or modify
+;;; it under the terms of the GNU General Public License as published by
+;;; the Free Software Foundation; either version 2 of the License, or
+;;; (at your option) any later version.
+;;;
+;;; This program is distributed in the hope that it will be useful,
+;;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;;; GNU General Public License for more details.
+;;;
+;;; You should have received a copy of the GNU General Public License
+;;; along with this program; if not, write to the Free Software
+;;; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111, USA
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; $Id: fortran.lsh,v 1.5 2009/10/23 22:50:15 leonb Exp $
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+
+#? fortran-libs
+;;.TYPE VAR
+;;.FILE libc/fortran.lsh
+;; This variable contains a list of libraries
+;; required/useful when linking fortran code.
+
+(defvar fortran-libs ())
+
+#? fortran-libs-static-p
+;;.TYPE VAR
+;;.FILE libc/fortran.lsh
+;; This variable is true when variable <fortran-libs>
+;; contain static libraries (.a files).
+;; This has two consequences:
+;;.IP
+;; It is advisable to reload the fortran support libraries whenever a new
+;; fortran object file is loaded.  Indeed the dynamic loader only loads the
+;; components of a static library that are necessary to resolve the currently
+;; undefined symbols.  A new fortran object file might define additional
+;; references to library components that have not been loaded yet.
+;;.IP
+;; Fortran code should preferably be loaded from static libraries.  Some
+;; fortran compiled shared libraries make references to symbols defined by a
+;; static fortran support library.  The dynamic loader cannot resolve such
+;; references at run-time.
+
+(defvar fortran-libs-static-p ())
+
+
+;;; ----------------------------------------
+;;; LOCATE FORTRAN SUPPORT LIBRARIES
+;;; ----------------------------------------
+
+
+;;;; SPECIAL CODE FOR GCC
+(when (= (getconf "GCC") "yes")
+  (let ((cc (getconf "CC"))
+        (f77 (getconf "F77"))
+        (exists (lambda(s) (when (filep s) s)))
+        (libgcc ())
+        (libf77 ()) )
+    ;; Locate libgcc
+    (reading (concat "| " f77 " --print-file-name=libgcc.a")
+      (setq libgcc (or libgcc (exists (read-string)))) )
+    (reading (concat "| " cc " --print-file-name=libgcc.a")
+      (setq libgcc (or libgcc (exists (read-string)))) )
+    ;; Search fortran lib
+    (when (filep libgcc)
+      (let* ((libgcc-dir (dirname libgcc))
+             (shared-library-path (list libgcc-dir)) )
+        (setq libf77 (or (find-shared-library "libgfortran")
+                         (find-shared-library "libg2c") ) )
+        (when (not libf77)
+          (when (setq libf77 
+                      (or (exists (concat-fname libgcc-dir "libgfortran.a"))
+                          (exists (concat-fname libgcc-dir "libg2c.a")) ) )
+            (setq fortran-libs-static-p t) ) ) ) )
+    ;; Keep searching
+    (when (and (not libf77) (not (= f77 "g77")))
+      (when (not (setq libf77 (find-shared-library "libgfortran")))
+        (when (setq libf77 (find-static-library "libgfortran"))
+          (setq fortran-libs-static-p t) ) ) )
+    (when (and (not libf77) (not (= f77 "gfortran")))
+      (when (not (setq libf77 (find-shared-library "libg2c")))
+        (when (setq libf77 (find-static-library "libg2c"))
+          (setq fortran-libs-static-p t) ) ) )
+    ;; Trouble
+    (when (and (not libf77) (not (= f77 "gfortran")))
+      (when (not (setq libf77 (find-shared-library "libf2c")))
+        (when (setq libf77 (find-static-library "libf2c"))
+          (setq fortran-libs-static-p t) ) )
+      (when libf77
+        (printf "*** Warning: Cannot find libg2c. Found libf2c instead\n")
+        (printf "***   Fortran support might be incomplete and/or unreliable\n") ) )
+    ;; Big trouble
+    (when (not libf77)
+      (printf "*** Warning: Cannot find fortran support library.\n")
+      (printf "***   Fortran support will be incomplete and/or unreliable\n") )
+    ;; Store
+    (when (and (stringp libf77) (filep libf77))
+      (setq fortran-libs (list libf77)) ) ) )
+
+
+;;; CODE FOR NON-GCC OR NON-GFORTRAN
+(when (not fortran-libs)
+  (each ((lib (list "libF77" "libV77")))  ;; insert more
+    (let ((fname ()))
+      (when (not (setq fname (find-shared-library lib)))
+        (when (setq fname (find-static-library lib))
+          (setq fortran-libs-static-p t) ) )
+      (when (and (stringp fname) (filep fname))
+        (setq fortran-libs (append fortran-libs fname)) ) ) ) )
+
+
+;;; PREEMPTIVELY LOAD SHARED FORTRAN LIBS
+(when (not fortran-libs-static-p)
+  (mapcar mod-load fortran-libs) )
+

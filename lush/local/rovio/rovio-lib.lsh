@@ -1,0 +1,126 @@
+(libload "libimage/image-io")
+
+(defclass rovio object
+  user 
+  password 
+  ip)
+
+(defmethod rovio rovio (user_ password_ ip_ resolution)
+  (setq user user_)
+  (setq password password_)
+  (setq ip ip_)
+  (==> this set-resolution resolution)
+  )
+
+;; mode 0: 176x144
+;; mode 1: 320x240 
+;; mode 2: 352x288
+;; mode 3: 640x480
+(defmethod rovio set-resolution (mode)
+  (printf "Setting resolution mode %d... " mode)
+  (let ((r (sys (sprintf "curl -s \"http://%s:%s@%s/ChangeResolution.cgi?ResType=%d\"" user password ip mode)))
+	(grabbed (==> this grab)))
+    (printf "Resolution is: %dx%d\n" 
+	    (idx-dim grabbed 1) (idx-dim grabbed 0))
+    ))
+
+(defmethod rovio grab ()
+  (let ((f (popen (sprintf "curl -s http://%s:%s@%s/Jpeg/CamImg%d.jpg | %s JPEG:- -compress lossless -depth 8 - PPM:-" 
+			   user password ip (int (rand 0 1000)) @@*convert-cmd* ) "r")))
+    (when (not f) (error "couldn't open convert pipe file"))
+    (prog1 (pnm-fread-rgb f) (pclose f))))
+
+(defmethod rovio command (cmd action param1 param2)
+  (let ((r (sys (sprintf "curl -s \"http://%s:%s@%s/rev.cgi?Cmd=%s&action=%d&drive=%d&speed=%d\" > /dev/null" 
+			 user password ip cmd action param1 param2))))
+    ))
+
+(defmethod rovio move (direction speed)
+  (if (or (< speed 0) (> speed 10))
+      (error "speed must be between 0 and 10"))
+  (==> this command "nav" 18 direction speed))
+
+(defmethod rovio stop ()
+  (==> this move 0 0))
+
+(defmethod rovio forward (speed)
+  (==> this move 1 speed))
+
+(defmethod rovio backward (speed)
+  (==> this move 2 speed))
+
+(defmethod rovio straight-left (speed)
+  (==> this move 3 speed))
+
+(defmethod rovio straight-right (speed)
+  (==> this move 4 speed))
+
+(defmethod rovio rotate-left (speed)
+  (==> this move 5 speed))
+
+(defmethod rovio rotate-right (speed)
+  (==> this move 6 speed))
+
+(defmethod rovio rotate-left-20-degrees ()
+  (==> this move 17 0))
+
+(defmethod rovio rotate-right-20-degrees ()
+  (==> this move 18 0))
+
+(defmethod rovio diagonal-forward-left (speed)
+  (==> this move 7 speed))
+
+(defmethod rovio diagonal-forward-right (speed)
+  (==> this move 8 speed))
+
+(defmethod rovio diagonal-backward-left (speed)
+  (==> this move 9 speed))
+
+(defmethod rovio diagonal-backward-right (speed)
+  (==> this move 10 speed))
+
+(defmethod rovio head-up ()
+  (==> this move 11 0))
+
+(defmethod rovio head-down ()
+  (==> this move 12 0))
+
+(defmethod rovio head-middle ()
+  (==> this move 13 0))
+
+(de test-movements ()
+    (==> rov forward 5) (sleep 1)
+    (==> rov backward 5) (sleep 1)
+    (==> rov head-up) (sleep 2)
+    (==> rov head-middle) (sleep 2)
+    (==> rov head-down) (sleep 2)
+    (==> rov stop) (sleep 1)
+    (==> rov straight-left 5) (sleep 1)
+    (==> rov straight-right 5) (sleep 1)
+    (==> rov rotate-left 5) (sleep 1)
+    (==> rov rotate-right 5) (sleep 1)
+    (==> rov rotate-left-20-degrees) (sleep 1)
+    (==> rov rotate-right-20-degrees) (sleep 1)
+    (==> rov straight-right 5) (sleep 1)
+    (==> rov diagonal-forward-left 5) (sleep 1)
+    (==> rov diagonal-forward-right 5) (sleep 1)
+    (==> rov diagonal-backward-left 5) (sleep 1)
+    (==> rov diagonal-backward-right 5) (sleep 1)
+  )
+
+;; id: admin; pw: r0b0t0
+;; WEP: d3058c92e3
+;; 192.168.1.10-14
+(de main (ip &optional (id "admin") (pw "r0b0t0"))
+  (new-window 800 600)
+  (let* ((rov (new rovio id pw ip 0))
+	 (grabbed (==> rov grab)))
+    ;; (test-movements)
+    (==> rov set-resolution 1)
+    (while t
+      (setq grabbed (==> rov grab))
+      (sleep .1) ;; don't request too many images or it crashes
+      (rgb-draw-matrix 0 0 grabbed 2 2) ;; zoom 4x4 with minimum res
+      )
+    )
+  )

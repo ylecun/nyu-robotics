@@ -1,0 +1,119 @@
+(libload "libimage/image-io")
+
+(de fread-all (f buffer)
+  ((-gptr-) f)
+  ((-idx1- (-ubyte-)) buffer)
+  (let ((n (idx-dim buffer 0))
+	(i 0))
+    ((-int-) n i)
+    #{{ int c;
+        unsigned char *p = IDX_PTR($buffer, unsigned char);
+        while ( ($i<$n)&&((c = getc($f)) != EOF) ) {  *p = c; p++; $i++; }
+        if ( $i == $n ) { $i = -1; }
+    }#}
+    i))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defclass rovio object
+  ;; status variables, as filled up by GetReport
+  url 				; url of robot, e.g. "http://user:password@192.168.1.200"
+  buffer			; a buffer for reading from the robot
+  error				; error code. 0 – no error
+  x y theta			; location relative to base, -32767 – 32768, -pi +pi
+  roomid			; room id. 0 = home base, 1-9 mutable room projector
+  ss				; navigation signal strength 0 – 65535 (16bit), Strong > 47000, no signal < 5000
+  beacon			; signal strength for docking beacon, when available 0 – 65535 (16bit)
+  beacon-x			; horizontal pos of beacon as seen by north star -32767 – 32768
+  next-room			; next strongest room beacon id seen -1: no room. 1-9: room projector
+  next-room-ss			; navigation signal strength 0 – 65535 (16bit), Strong > 47000, no signal < 5000
+  state				; status of rovio 0: idle, 1: driving home; 2: docking; 3: exec path; 4: rec path
+  pp				; current waypoint used in the path (1-10)
+  flags				; 1: home position; 2: obstacle detected; 4: IR activated
+  brightness			; current brightnes level (1-6)
+  resolution			; current camera resolution 0:176x144; 1:320x240; 2:352x240; 3:640x480
+  video-compression		; 0:low; 1:med; 2:high
+  frame-rate			; 1-30
+  privilege			; 0:administrator; 1:guest user
+  user-check			; 0:request username and passwd; 1:no request
+  speaker-volume		; 0-31
+  mic-volume			; 0-31
+  wifi-ss			; wifi signal strenght 0-254
+  show-time			; whether showing time in image
+  battery			; battery status <100:drained; 100-106:low; 106-127:OK
+  charging			; 0-79: not charging; 80:charging
+  head-positon			; 204:low;  135-140:mid-way; 65:high
+  ac_freq			; 0:not detected; 1:50Hz; 2:60Hz
+  ;; GetMCUReport result
+  left-ticks				; number of left wheel ticks since last call
+  right-ticks				; number of left wheel ticks since last call
+  back-ticks				; number of back wheel ticks since last call
+  ;; 
+
+  )
+
+(defmethod rovio rovio (user psswd ip)
+  (setq url (sprintf "http://%s:%s@%s" user psswd ip))
+  (setq buffer (ubyte-matrix 100000)))
+
+(defmethod rovio cmd (cmd)
+  (let ((f (popen (sprintf "curl -s %s/%s" url cmd) "r"))
+	(n (idx-dim buffer 0))
+	(i 0))
+    (when (not f) (error "couldn't open pipe from rovio"))
+    (when (< (setq i (fread-all f buffer)) 0) (error "couldn't read all data"))
+    (pclose f) 
+    i))
+  
+;; grab image from camera.
+;; this uses djpeg from the libjpeg-progs package
+(defmethod rovio get-image2 ()
+  (let ((f (popen (sprintf "curl -s %s/Jpeg/CamImg%d.jpg | djpeg -pnm" url (rand 0 1000)) "r")))
+    (when (not f) (error "couldn't open djpeg pipe file"))
+    (prog1 (pnm-fread-rgb f) (pclose f))))
+
+;; grab image from camera.
+;; this uses convert from ImagMagick
+(defmethod rovio get-image ()
+  (let ((f (popen (sprintf "curl -s %s/Jpeg/CamImg%d.jpg | %s JPEG:- -compress lossless -depth 8 - PPM:-" 
+			   url (int (rand 0 1000)) *convert-cmd* ) "r")))
+    (when (not f) (error "couldn't open convert pipe file"))
+    (prog1 (pnm-fread-rgb f) (pclose f))))
+
+;; 0:176x144; 1:352x288; 2:320x240; 3:640x480
+(defmethod rovio ChangeResolution (res)
+  (sys (sprintf "curl -s %s/ChangeResolution.cgi?ResType=%d" url res)) ())
+
+;; 0: low compression; 1: medium; 2: high
+(defmethod rovio ChangeCompressionRatio (val)
+  (sys (sprintf "curl -s %s/ChangeCompressRatio.cgi?Ratio=%d" url val)) ())
+
+;; change brightness 0-6
+(defmethod rovio ChangeBrightness (val)
+  (sys (sprintf "curl -s %s/ChangeBrightness.cgi?Brightness=%d" url val)) ())
+
+;; get status. Not very useful.
+;; returns an array of 95 bytes.
+(defmethod rovio GetStatus () 
+  (let ((n (==> this cmd "GetStatus.cgi"))
+	(b (narrow buffer 0 95 9)))
+    (when (<> n 107) (error "didn't read correct number of bytes"))
+    (idx-copy b)))
+
+(defmethod rovio GetReport () 
+  (let* ((n (==> this cmd "rev.cgi?Cmd=nav\\&action=1"))
+	 (b (narrow buffer 0 (- n 1) 0)))
+    
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(de print-buffer (b) (idx-bloop ((c b)) (printf "%s" (chr (c)))) (printf "\n"))
+(de tochr (b) (let ((r "")) (idx-bloop ((c b)) (setq r (concat r (chr (c))))) r))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make () 
+	  fread-all)

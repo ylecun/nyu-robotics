@@ -1,0 +1,187 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; LUSH Lisp Universal Shell
+;;;   Copyright (C) 2002 Leon Bottou, Yann Le Cun, AT&T Corp, NECI.
+;;; Includes parts of TL3:
+;;;   Copyright (C) 1987-1999 Leon Bottou and Neuristique.
+;;; Includes selected parts of SN3.2:
+;;;   Copyright (C) 1991-2001 AT&T Corp.
+;;;
+;;; Includes information derived from the GSL (Gnu Scientific Library)
+;;;   header files which are copyrighted and distributed under the GPL
+;;;   by their respective authors.
+;;;
+;;; This program is free software; you can redistribute it and/or modify
+;;; it under the terms of the GNU General Public License as published by
+;;; the Free Software Foundation; either version 2 of the License, or
+;;; (at your option) any later version.
+;;;
+;;; This program is distributed in the hope that it will be useful,
+;;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;;; GNU General Public License for more details.
+;;;
+;;; You should have received a copy of the GNU General Public License
+;;; along with this program; if not, write to the Free Software
+;;; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111, USA
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; $Id: $
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+
+(libload "opencv2/cv-config")
+
+;; dummy function that adds OpenCV header files in C file
+(eval `(de dummy-cv-image () ,cv-cpheader-cmd ()))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? ** OpenCV images that are compatible with Lush
+;; These classes encaspulate an OpenCV image (cvImage)
+;; together with a Lush IDX that point to the same pixel data.
+;; OpenCv functions and Lush functions can be called
+;; without any need for conversion, copying or memory
+;; allocation.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * cv-image
+;; a simple encaspulation for a cvImageHeader structure
+;; this is an abstract class. Most users will create instances
+;; of the sub-classes such as <cv-uimage> or <cv-fimage>.
+(defclass cv-image object
+  ((-gptr- "IplImage*") iplimage))
+
+#? (new cv-image width height channels)
+;; create a new <cv-image> of size <width> by <height> by <channels>.
+;; This merely create an OpenCV image header with no data.
+(defmethod cv-image cv-image (width height channels)
+  ((-int-) height width channels)
+  #{ $iplimage = cvCreateImageHeader( cvSize($width,$height), IPL_DEPTH_8U, $channels);
+  #} ())
+
+#? (==> cv-image get-info)
+;; return an idx1 of int with four integers: the width,
+;; height, bit depth, and number of channels contained in
+;; the IplImage header. This is merely for debugging purpose.
+(defmethod cv-image get-info ()
+  (let ((m (int-matrix 4)))
+    (m 0 (to-int #{ ((IplImage *)$iplimage)->width #}))
+    (m 1 (to-int #{ ((IplImage *)$iplimage)->height #}))
+    (m 2 (to-int #{ ((IplImage *)$iplimage)->depth #}))
+    (m 3 (to-int #{ ((IplImage *)$iplimage)->nChannels #}))
+    m))
+
+(defmethod cv-image -destructor () #{ cvReleaseImageHeader(&$iplimage); #} ())
+
+#? (==> <cv-image> display [<x> <y> <zoom>])
+;; display image in current window at position <x>,<y> (0,0 by default)
+;; and integer magnification factor <zoom>. If there is no current
+;; window, an appropriately sized window is opened.
+(defmethod cv-image display (&optional x y z)
+  (when (not window) 
+    (new-window 0 0 (* zoom (idx-dim image 0)) (* zoom (idx-dim image 1))))
+  (if (<= (idx-dim image 2) 2)
+      (rgb-draw-matrix x y (selectq image 2 0) z z)
+    (rgb-draw-matrix x y (narrow image 2 3 0) z z)))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * cv-uimage
+;; an OpenCV image of ubytes with an idx3 pointing to the same data.
+;; the <image> slot is the idx3 (sizes are height, width, and number
+;; of channels), while the <iplimage> slot is a pointer to the
+;; corresponding OpenCV <IplImage> structure pointing to the same data.
+(defclass cv-uimage cv-image
+  ((-idx3- (-ubyte-)) image))
+
+#? (new cv-uimage width height channels)
+;; create a new <cv-uimage> of size <width> by <height> by <channels>)
+(defmethod cv-uimage cv-uimage (width height channels)
+  ((-int-) height width channels)
+  (when (<> 0 (mod (* width channels) 4))
+    (error "width*channels must be a multiple of 4"))
+  (setq image (ubyte-matrix height width channels))
+  #{ $iplimage = cvCreateImageHeader( cvSize($width,$height), IPL_DEPTH_8U, $channels);
+     cvSetImageData($iplimage,IDX_PTR($image,char),$width*$channels*sizeof(unsigned char));
+  #} ())
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * cv-iimage
+;; an OpenCV image of ints with an idx3 pointing to the same data.
+;; the <image> slot is the idx3 (sizes are height, width, and number
+;; of channels), while the <iplimage> slot is a pointer to the
+;; corresponding OpenCV <IplImage> structure pointing to the same data.
+(defclass cv-iimage cv-image
+  ((-idx3- (-int-)) image))
+
+#? (new cv-iimage width height channels)
+;; create a new <cv-iimage> of size <width> by <height> by <channels>)
+(defmethod cv-iimage cv-iimage (width height channels)
+  ((-int-) height width channels)
+  (setq image (int-matrix height width channels))
+  #{ $iplimage = cvCreateImageHeader( cvSize($width,$height), IPL_DEPTH_32S, $channels);
+     cvSetImageData($iplimage,IDX_PTR($image,char),$width*$channels*sizeof(int));
+  #} ())
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * cv-fimage
+;; an OpenCV image of floats with an idx3 pointing to the same data.
+;; the <image> slot is the idx3 (sizes are height, width, and number
+;; of channels), while the <iplimage> slot is a pointer to the
+;; corresponding OpenCV <IplImage> structure pointing to the same data.
+(defclass cv-fimage cv-image
+  ((-idx3- (-float-)) image))
+
+#? (new cv-fimage width height channels)
+;; create a new <cv-fimage> of size <width> by <height> by <channels>)
+(defmethod cv-fimage cv-fimage (width height channels)
+  ((-int-) height width channels)
+  (setq image (float-matrix height width channels))
+  #{ $iplimage = cvCreateImageHeader( cvSize($width,$height), IPL_DEPTH_32F, $channels);
+     cvSetImageData($iplimage,IDX_PTR($image,char),$width*$channels*sizeof(float));
+  #} ())
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * cv-dimage
+;; an OpenCV image of floats with an idx3 pointing to the same data.
+;; the <image> slot is the idx3 (sizes are height, width, and number
+;; of channels), while the <iplimage> slot is a pointer to the
+;; corresponding OpenCV <IplImage> structure pointing to the same data.
+(defclass cv-dimage cv-image
+  ((-idx3- (-double-)) image))
+
+#? (new cv-dimage width height channels)
+;; create a new <cv-dimage> of size <width> by <height> by <channels>)
+(defmethod cv-dimage cv-dimage (width height channels)
+  ((-int-) height width channels)
+  (setq image (double-matrix height width channels))
+  #{ $iplimage = cvCreateImageHeader( cvSize($width,$height), IPL_DEPTH_32F, $channels);
+     cvSetImageData($iplimage,IDX_PTR($image,char),$width*$channels*sizeof(double));
+  #} ())
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defclass cvmat object
+  ((-gptr- "CvMat *") p))
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(let ((dhc-make-lushflags (concat dhc-make-lushflags cv-flags)))
+  (dhc-make-with-c++
+   () 
+   cv-libs
+   dummy-cv-image
+   (cv-image cv-image get-info -destructor)
+   (cv-uimage cv-uimage)
+   (cv-iimage cv-iimage)
+   (cv-fimage cv-fimage)
+   (cv-dimage cv-dimage)))
+
+

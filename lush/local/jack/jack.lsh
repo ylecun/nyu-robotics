@@ -1,0 +1,124 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(de jcallback (nframes arg)
+  ((-int-) nframes)
+  ((-gptr-) arg)
+  #{{ int i;
+      jack_default_audio_sample_t *buf;
+      jack_port_t *output_port;
+      struct CClass_ts *p;
+      p = (struct CClass_ts *)$arg;
+      output_port = (jack_port_t *)(p->outputport);
+      buf = (jack_default_audio_sample_t *)jack_port_get_buffer(output_port, $nframes);
+      memset(buf, 0, $nframes * sizeof(jack_default_audio_sample_t));
+      for (i = 0; i < $nframes; i++) {
+        buf[i] = p->Vtbl->M_update(p,0);
+      }
+  }#} (to-int 0))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defclass jsynth object
+  ((-gptr-) jackhandle)
+  ((-gptr-) outputport)
+  ((-int-) rate)
+  ((-int-) active)
+  )
+
+(defmethod jsynth jsynth (clientname)
+  ((-str-) clientname)
+  (setq active 0)
+  #{{jack_client_t *jack_handle;
+     if ((jack_handle = jack_client_new(STRING_DATA($clientname))) == 0) {
+         run_time_error("cannot connect to jack server\n");
+     }
+     $outputport = (void *)jack_port_register(jack_handle, "Out", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+     $rate = jack_get_sample_rate(jack_handle);
+     $jackhandle = (void*)jack_handle;
+  }#} () )
+
+
+
+(defmethod jsynth set-callback (p)
+  ((-obj- (ts)) p)
+  ;; (==> p update 3)
+  #{ // int (*callbackptr)(int , void*);
+     // JackProcessCallback callbackptr;
+     if ($active != 0) {
+       if ( jack_deactivate( (jack_client_t *)($jackhandle)) )  {
+         run_time_error("cannot deactivate client");
+       }
+       $active = 0;
+     }
+     // callbackptr = C_jcallback;
+     jack_set_process_callback((jack_client_t *)($jackhandle), (JackProcessCallback)C_jcallback, (void *)$p);
+
+     if ($active == 0) {
+       if (jack_activate((jack_client_t *)($jackhandle))) {
+         run_time_error("cannot activate client");
+       }
+       $active = 1;
+     }
+  #} ())
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defclass ts object
+  ((-gptr- "jack_port_t *") outputport)
+  ((-double-) phi)
+  ((-double-) note)
+  ((-double-) freq)
+  ((-double-) dphi)
+  ((-double-) volume)
+  ((-double-) rate))
+
+(defmethod ts note (n)
+  ((-double-) n)
+  (setq note n)
+  (setq freq (* 8.1757989 (exp (* note (/ (log 2) 12)))))
+  (setq dphi (/ freq rate)))
+
+(defmethod ts ts (outport)
+  ((-gptr- "jack_port_t *") outport)
+  (setq outputport outport)
+  (setq phi 0) 
+  (setq volume 1)
+  (setq rate 44100)
+  (==> this note 69))
+
+(defmethod ts update (s)
+  ((-double-) s)
+  (incr phi dphi)
+  (cond 
+   ((< phi 0) (incr phi 1.0))
+   ((>= phi 1.0) (incr phi -1.0)))
+  (sin (* 6.2831854 phi)))
+    
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(dhc-make-with-libs
+  ()
+  '("/usr/lib/libjack.so")
+  #{ 
+    #include <jack/jack.h>
+    #include <math.h>
+    #include <string.h>
+    #define STRING_DATA(s) (char *)(s->data)
+
+
+  #}
+  jcallback
+  (ts note ts update)
+  (jsynth jsynth set-callback)
+  )
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de test ()
+  (let* ((js (new jsynth "lushsynth"))
+	 (module (new ts :js:outputport)))
+    (==> js set-callback module)
+    (for (i 30 60) (==> module note i) (sleep 2))))
+
+	 

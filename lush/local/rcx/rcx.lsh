@@ -1,0 +1,104 @@
+
+(de rcx_dummy ()
+  (cpheader "#include \"../send.h\"")
+  ())
+
+(de rcx_strhex_short_little_endian ( s )
+  ((-int-) s)
+  (let ((retstr "aaaa"))
+    #{ {
+      char *a= (char *)$retstr->data;
+      unsigned short val = $s;
+      unsigned char *b = (char *)&val;
+      sprintf(a,"%02x",*b);
+      sprintf((a+2),"%02x",*(b+1));
+    } #}
+    retstr))
+  
+(defclass rcx object
+  ((-gptr- "unsigned char *") sendbuf)
+  ((-gptr- "unsigned char *") recvbuf)
+  ((-gptr- "unsigned char *") sp)
+  ((-int-) slen rlen)
+  ((-int-) fd)
+  ((-int-) flip))
+
+(defmethod rcx rcx ( devname )
+  ((-str-) devname)
+  #{ {
+  $sendbuf = (unsigned char *) malloc(4096); 
+  $recvbuf = (unsigned char *) malloc(4096);
+  $sp = $sendbuf;
+  $fd = rcx_init((char *)$devname->data);
+  } #}
+  (setq flip 0)
+  fd)
+
+(defmethod rcx -destructor ()
+  #{ rcx_close($fd); 
+  free($sendbuf);
+  free($recvbuf);
+  #}
+  ())
+
+
+(defmethod rcx encode_opcode ( s )
+  ((-str-) s)
+  (setq slen (/ (len s) 2))
+  #{ {
+  int i;
+  char tmp[3];
+  char *a;
+  char *b = (char *)$s->data;
+  $sp = $sendbuf;
+  for (i=0; i<$slen; i++) {
+      a = tmp;   
+      *a++ = *b++; 
+      *a++ = *b++;
+      *a = '\0';
+      *$sp = strtol(tmp, NULL, 16);
+      ($sp)++;
+  }
+  } #}
+  slen)
+  
+(defmethod rcx send_opcode ( s )
+  ((-str-) s)
+  (==> this encode_opcode s)
+  #{ $rlen = rcx_send($fd,$sendbuf,$slen,$recvbuf,4096); #}
+  rlen)
+
+(defmethod rcx get_var ( varnum )
+  ((-int-) varnum)
+  (if (or (< varnum 0) (> varnum 31))
+      (error "variable number has to be 0~31")
+    (let ((opcode (concat (if (= flip 1) "1a" "12") 
+			  "00" 
+			  (sprintf "%02d" varnum))))
+      (==> this  send_opcode  opcode)
+      (setq flip (if (= flip 1) 0 1)))
+    (let ((retval 0))
+      #{ $retval = (int) *((unsigned short *)($recvbuf+1)); #}
+      retval)))
+
+(defmethod rcx set_var ( varnum val )
+  ((-int-) varnum val)
+  (if (or (< varnum 0) (> varnum 31))
+      (error "variable number has to be 0~31")
+    (let* ((opcode (concat (if (= flip 1) "1c" "14") 
+			  (sprintf "%02d" varnum)
+			  "02"
+			  (rcx_strhex_short_little_endian val))))
+      (==> this  send_opcode  opcode)
+      (setq flip (if (= flip 1) 0 1)))
+      ()))
+
+(defmethod rcx hexdump ()
+  #{ hexdump($recvbuf,$rlen); #}
+  ())
+
+;; (sys "gcc -fPIC -c send_func.c")
+;; (sys "gcc -o send.so -shared send_func.o")
+(mod-load "/home/jhuangfu/lush/packages/rcx/send.so")
+(dhc-make () rcx_dummy  rcx_strhex_short_little_endian
+	  (rcx rcx -destructor  encode_opcode  send_opcode get_var set_var hexdump ))

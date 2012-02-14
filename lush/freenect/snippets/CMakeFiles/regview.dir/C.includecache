@@ -1,0 +1,36 @@
+#IncludeRegexLine: ^[ 	]*#[ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/home/yann/text/Teaching/2012s-G22-3033-002/code/examples/regview.c
+stdio.h
+-
+stdlib.h
+-
+string.h
+-
+assert.h
+-
+libfreenect.h
+/home/yann/text/Teaching/2012s-G22-3033-002/code/examples/libfreenect.h
+pthread.h
+-
+GLUT/glut.h
+-
+OpenGL/gl.h
+-
+OpenGL/glu.h
+-
+GL/glut.h
+-
+GL/gl.h
+-
+GL/glu.h
+-
+math.h
+-
+

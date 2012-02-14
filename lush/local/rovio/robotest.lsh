@@ -1,0 +1,43 @@
+(load "rovio-lib")
+
+(defparameter ip "192.168.1.14")
+
+(de square-distance (v1 v2)
+  (let ((s 0))
+    (idx-bloop ((v1 v1) (v2 v2))
+      (let ((d (- (v1) (v2))))
+	(incr s (* d d))))
+    s))
+
+#? (detect-color <color> <threshold> <in> <out>)
+;; sweep through all pixel in <in>,
+;; and write the corresponding pixel
+;; in out with 255 if the <in> pixel
+;; matches <color> (square distance less
+;; than <threshold> in RGB space.
+(de detect-color (color threshold in out)
+  (idx-bloop ((in in) (out out))
+    (idx-bloop ((in in) (out out))
+      (if (< (square-distance in color) threshold)
+	(out 255) (out 0)))) ())
+
+(de test (ip thres)
+  (when (not window) (new-window))
+  (let ((r (new rovio "admin" "r0b0t0" ip 1))
+	(m ())
+	(z (ubyte-matrix 240 320))
+	(color [u 0 0 0]))
+    (setq m (==> r grab))
+    (rgb-draw-matrix 0 0 m)
+    (save-matrix m "test-image.dat")
+    (detect-color color thres m z) 
+    (rgb-draw-matrix 0 244 z)
+    ))
+
+
+;; (orbit 10 t 0.1 () 0.0 1)
+(de orbit (n s dels r delr sp) 
+  (let ((r (new rovio "admin" "r0b0t0" "192.168.1.11" 1))) 
+    (repeat n 
+      (when s (==> r move 4 sp) (sleep dels)) 
+      (when r (==> r move 5 sp) (sleep delr)))))

@@ -1,0 +1,241 @@
+;; roomba port
+
+(de roombasci-dummy ()
+  (cpheader "#include <sys/types.h>")
+  (cpheader "#include <sys/stat.h>")
+  (cpheader "#include <sys/ioctl.h>")
+  (cpheader "#include <time.h>")
+  (cpheader "#include <fcntl.h>")
+  (cpheader "#include <termios.h>")
+  (cpheader "#include <stdio.h>")
+  (cpheader "#include <errno.h>")
+  (cpheader "#include <unistd.h>")
+  ())
+
+
+(de roombasci-close-port (fd) ((-int-) fd) #{ close($fd); #} ())
+
+;; timeout is in 1/10th of a second.
+(de roombasci-open-port (port timeout) 
+  ((-str-) port)
+  ((-int-) timeout)
+  (let ((fd 0))
+    ((-int-) fd)
+    #{ {struct termios  term;
+        $fd = open( $port->data, O_RDWR + O_NOCTTY + O_NONBLOCK);
+        if ($fd < 0) { 
+          printf("port=[%s]\n",(unsigned char *)($port->data));
+          error(NIL,"could not open serial port",NIL); 
+        }
+        if(ioctl($fd, TIOCEXCL) == -1) {
+          close($fd);
+          error(NIL,"cannot set exclusive access to serial port",NIL);
+        }
+        // if(fcntl($fd, F_SETFL, FNDELAY) == -1) 
+        if(fcntl($fd, F_SETFL, 0) == -1) {
+          close($fd);
+          error(NIL,"cannot set blocking IO on serial port",NIL);
+        }
+        tcgetattr($fd ,&term);  
+        cfsetispeed(&term, B57600);
+        cfsetospeed(&term, B57600);
+        term.c_cflag |= (CLOCAL | CREAD);
+        term.c_cflag &= ~PARENB;
+        term.c_cflag &= ~CSTOPB;
+        term.c_cflag &= ~CSIZE;
+        term.c_cflag |= CS8;
+        term.c_cflag &= ~CRTSCTS;
+        term.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+        term.c_iflag |= (IGNBRK | IGNPAR | ISTRIP);
+        term.c_iflag &= ~(IXON | IXOFF | IXANY);
+        term.c_oflag &= ~OPOST;
+        term.c_cc[VMIN] = 0;
+        term.c_cc[VTIME] = ($timeout);  
+        tcsetattr($fd, TCSANOW, &term);
+        tcflush($fd, TCIOFLUSH);
+    } #} 
+    fd))
+  
+(de roombasci-write-byte (fd c) 
+  ((-int-) fd)
+  ((-ubyte-) c)
+  (to-int #{ write($fd, &$c, 1) #}))
+
+;; write n bytes, return number of bytes written.
+(de roombasci-write-bytes (fd buffer n)
+  ((-int-) fd)
+  ((-idx1- (-ubyte-)) buffer)
+  ((-int-) n)
+  (to-int #{ write($fd, IDX_PTR($buffer,unsigned char), $n) #}))
+
+(de roombasci-read-bytes (fd buffer n)
+  ((-int-) fd)
+  ((-idx1- (-ubyte-)) buffer)
+  ((-int-) n)
+  (when (> n (idx-dim buffer 0)) (error "buffer too short"))
+  (to-int #{ read($fd, IDX_PTR($buffer,unsigned char), $n) #}))
+
+
+;; read and drop all the the pending bytes, emptying the buffer
+;; return number of bytes read.
+(de roombasci-flush (fd)
+  ((-int-) fd)
+  (let ((cnt 0))
+    ((-int-) cnt)
+    #{{ int        rc;
+        unsigned char buf[8];
+        if (fcntl($fd,F_SETFL,O_NONBLOCK) == -1) { error(NIL,"cannot set non-blocking io",NIL);}
+        do {
+          rc = read($fd, buf, 8);
+          printf("%d ",rc); fflush(stdout);
+          $cnt += rc;
+        } while ( rc == 8 );
+       if (fcntl($fd,F_SETFL,0) == -1) { error(NIL,"cannot set blocking io",NIL);}
+       if (rc < 0) {
+            // Read error
+            printf("\nrc=%d", rc);
+            error(NIL,"error on read",NIL);
+       }
+      }
+    #}
+    cnt))
+
+(dhc-make () 
+	  roombasci-dummy 
+	  roombasci-close-port roombasci-open-port
+	  roombasci-write-byte roombasci-write-bytes
+	  roombasci-read-bytes roombasci-flush)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defclass roombasci object
+  fd
+  inbuffer
+  outbuffer
+  ;; sensors
+  sensors-error
+  bumps-wheeldrops
+  wall
+  cliff-left
+  cliff-front-left
+  cliff-front-right
+  cliff-right
+  virtual-wall
+  motor-overcurrents
+  dirt-left
+  dirt-right
+  remote-opcode
+  buttons
+  distance
+  angle
+  charging-state
+  voltage
+  current
+  temperature
+  charge
+  capacity
+  )
+
+(defmethod roombasci roombasci (port)
+  (setq fd (roombasci-open-port port 10))
+  (setq inbuffer (ubyte-matrix 255))
+  (setq outbuffer (ubyte-matrix 255))
+  ;; initialize SCI, wake up roomba
+  (roombasci-write-byte fd 128)
+  ;; put roomba under user control in full mode
+  (roombasci-write-byte fd 130)
+  (roombasci-write-byte fd 132))
+
+(defmethod roombasci -destructor ()
+  (roombasci-close-port fd))
+
+(defmethod roombasci leds (n pcol pintensity)
+  (roombasci-write-byte fd 139)
+  (roombasci-write-byte fd (bitand n 63))
+  (roombasci-write-byte fd (max 0 (min 255 pcol)))
+  (roombasci-write-byte fd (max 0 (min 255 pintensity))))
+
+(defmethod roombasci raw-sensors (c)
+  (roombasci-write-byte fd 142)
+  (setq c (bitand c 3))
+  (roombasci-write-byte fd (bitand c 3))
+  (let* ((n (selectq c (0 26) (1 10) (2 6) (3 10)))
+	 (m (roombasci-read-bytes fd inbuffer n)))
+    (when (> m 0) (narrow inbuffer 0 m 0))))
+
+(defmethod roombasci update-sensors ()
+  (roombasci-write-byte fd 142)
+  (roombasci-write-byte fd 0)
+  (setq sensors-error -1)
+  (let* ((m (roombasci-read-bytes fd inbuffer n)))
+    (when (= 26 m)
+      (setq sensors-error 0)
+      (setq bumps-wheeldrops (inbuffer 0))
+      (setq wall (inbuffer 1))
+      (setq cliff-left (inbuffer 2))
+      (setq cliff-front-left (inbuffer 3))
+      (setq cliff-front-right (inbuffer 4))
+      (setq cliff-right (inbuffer 5))
+      (setq virtual-wall (inbuffer 6))
+      (setq motor-overcurrents (inbuffer 7))
+      (setq dirt-left (inbuffer 8))
+      (setq dirt-right (inbuffer 9))
+      (setq remote-opcode (inbuffer 10))
+      (setq buttons (inbuffer 11))
+      (setq distance (+ -32768 (* 256 (inbuffer 12)) (inbuffer 13)))
+      (setq angle (+ -32768 (* 256 (inbuffer 14)) (inbuffer 15)))
+      (setq charging-state (inbuffer 16))
+      (setq voltage (+ (* 256 (inbuffer 17)) (inbuffer 18)))
+      (setq current (+ -32768 (* 256 (inbuffer 19)) (inbuffer 20)))
+      (setq temperature (+ -128 (inbuffer 21)))
+      (setq charge (+ (* 256 (inbuffer 22)) (inbuffer 23)))
+      (setq capacity (+ (* 256 (inbuffer 24)) (inbuffer 25)))
+      ;; update odometry
+      (if (= 0 angle)
+	  (progn
+	    (incr northing (* (cos heading) distance))
+	    (incr easting (* (sin heading) distance)))
+	(let* ((radius (/ (* width distance) angle))
+	       (dx (* radius (sin angle)))
+	       (dy (* radius (- 1 (cos angle)))))
+	  ;; ***** increment northing and easting here
+	  )))
+      (incr heading (/ angle -126))
+
+    delta-heading
+    delta-x
+    sensors-error))
+  
+;; move in straight line with specified
+;; velocity in mm/s
+(defmethod roombasci move (velocity)
+  (roombasci-write-byte fd 137)
+  (roombasci-write-byte fd (bitshr (bitand velocity 0xff00) 8))
+  (roombasci-write-byte fd (bitand velocity 0xff))
+  (roombasci-write-byte fd 0x80)
+  (roombasci-write-byte fd 0x00) ())
+
+;; turn in place. direction > 0 = clockwise
+;; direction < 0 = counterclockwise.
+(defmethod roombasci turn (direction)
+  (roombasci-write-byte fd 137)
+  (roombasci-write-byte fd 0)
+  (roombasci-write-byte fd 0)
+  (if (> direction 0)
+      (progn 
+	(roombasci-write-byte fd 255)
+	(roombasci-write-byte fd 255))
+    (roombasci-write-byte fd 0)
+    (roombasci-write-byte fd 1)) ())
+
+  
+(defmethod roombasci display-state (xx yy)
+  ())
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de roombasci-test ()
+  (defparameter z (new roombasci "/dev/ttyUSB0"))
+  (sleep 0.5)
+  (==> z leds 1 0 255)
+  ())
+

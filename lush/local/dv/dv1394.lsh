@@ -1,0 +1,12 @@
+
+;; device /dev/video1394/0
+;; /dev/ieee1394/dv/host0/NTSC/in
+
+(de read-chunk (f m)
+  ((-gptr-) f)
+  ((-idx1- (-ubyte-)) m)
+  (let ((n (idx-dim m 0)))
+    (to-int #{ fread(IDX_PTR($m, unsigned char), 1, $n, (FILE *)($f)) #})))
+
+(dhc-make () read-chunk)
+

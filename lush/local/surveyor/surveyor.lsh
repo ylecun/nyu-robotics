@@ -1,0 +1,363 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; A set of Lush classes to talk the SRV-1 robot from Surveyor Inc.
+;; Yann LeCun, May 2007
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(libload "jpeg/jpeg")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defclass srv1 object
+  fd
+  inbuffer
+  outbuffer
+  verbose
+  ir-front
+  ir-left
+  ir-back
+  ir-right
+  )
+
+;; {<code> 
+;;  (defparameter p (new srv1 "/dev/ttyUSB0"))
+;; </code>}
+(defmethod srv1 srv1 (port)
+  (setq fd (srvport-open-port port 10))
+  (setq inbuffer (ubyte-matrix 250000))
+  (setq outbuffer (ubyte-matrix 256))
+  (setq verbose t)
+  (==> this set-resolution 1)
+  )
+
+;; rotate left by 20 degrees: '0'
+(defmethod srv1 l20 () (==> this cmd 48 "l20"))
+
+;; rotate right by 20 degrees: '.'
+(defmethod srv1 r20 () (==> this cmd 46 "r20"))
+
+;; drive forward: '8'
+(defmethod srv1 f () (==> this cmd 56 "f"))
+
+;; stop: '5'
+(defmethod srv1 s () (==> this cmd 53 "s"))
+
+;; drive backward: '2'
+(defmethod srv1 b () (==> this cmd 50 "b"))
+
+;; rotate left: '4'
+(defmethod srv1 l () (==> this cmd 52 "l"))
+
+;; rotate right: '9'
+(defmethod srv1 r () (==> this cmd 57 "r"))
+
+;; get infrared returns
+(defmethod srv1 bounceir ()
+  (srvport-write-byte fd 66)
+  (let ((nn (srvport-read-pound fd 100)))
+    (when verbose (printf "%d chars until '#' (%s)\n" nn "bounceir")))
+  (srvport-read-bytes fd inbuffer 24)
+  (if (or (<> 35 (inbuffer 0)) (<> 66 (inbuffer 1))
+	  (<> 111 (inbuffer 2)) (<> 117 (inbuffer 3))
+	  (<> 110 (inbuffer 4)) (<> 99 (inbuffer 5))
+	  (<> 101 (inbuffer 6)) (<> 10 (inbuffer 23)))
+      (progn
+	(printf "bad echo BounceIR: [")
+	(for (i 0 23) (printf "%d " (inbuffer i)))
+	(printf "]\n")
+	(==> this flush))
+    (progn 
+      (setq ir-front (+ (* 256 (inbuffer 12) (inbuffer 13))))
+      (setq ir-left  (+ (* 256 (inbuffer 15) (inbuffer 16))))
+      (setq ir-back  (+ (* 256 (inbuffer 18) (inbuffer 19))))
+      (setq ir-right (+ (* 256 (inbuffer 21) (inbuffer 22)))))))
+      
+
+;; set capture resolution: 1=80x64, 3=160x128, 5=320x240
+(defmethod srv1 set-resolution (n)
+  (selectq n
+    (1 (==> this cmd 97 "a"))
+    (3 (==> this cmd 98 "b"))
+    (5 (==> this cmd 99 "c"))
+    (t (error "invalid resolution code (must be 1, 3, or 5)"))))
+
+(defmethod srv1 grab ()
+  (do-while (<> 35 (srvport-read-byte fd))
+    (srvport-write-byte fd 73))
+  (srvport-read-bytes fd inbuffer 9)
+  (if (or (<> 35 (inbuffer 0)) (<> 73 (inbuffer 1)) 
+	  (<> 77 (inbuffer 2)) (<> 74 (inbuffer 3)))
+      (progn
+	(printf "bad echo grab: [%d %d %d %d]\n" 
+		(inbuffer 0) (inbuffer 1)
+		(inbuffer 2) (inbuffer 3))
+	(==> this flush))
+    (let* ((resolution (inbuffer 4))
+	   (nbytes (+ (inbuffer 5) (bitshl (inbuffer 6) 8)
+		      (bitshl (inbuffer 7) 16) (bitshl (inbuffer 8) 24)))
+	   (readbytes 0))
+      (setq readbytes (srvport-read-bytes fd inbuffer nbytes))
+      (if (<> nbytes readbytes) 
+	  (progn
+	    (printf "corrupted image (%d bytes instead of %d]\n" 
+		    readbytes nbytes)
+	    (==> this flush)
+	    ())
+	(narrow inbuffer 0 nbytes 0)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; low level stuff
+
+(defmethod srv1 flush ()
+  (let ((n 0) (total 0))
+    (while (> (setq n (srvport-read-bytes fd inbuffer (idx-dim inbuffer 0))) 0) (incr total n))
+    (when verbose (printf "flushed %d bytes\n" total))))
+
+(defmethod srv1 cmd (code cmdname)
+  (srvport-write-byte fd code)
+  (let ((nn (srvport-read-pound fd 100)))
+    (when verbose (printf "%d chars until '#' (%s)\n" nn cmdname)))
+  (srvport-read-bytes fd inbuffer 1)
+  (when (<> code (inbuffer 0))
+    (printf "bad echo %s: [%s] (%d)\n" cmdname (chr (inbuffer 0)) (inbuffer 0))
+    (==> this flush)))
+
+(defmethod srv1 -destructor ()
+  (gps-close-port fd))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; low-level serial port functions
+
+#? * low-level serial port functions for Surveyor communication
+
+(de srvport-dummy ()
+  (cpheader "#include <sys/types.h>")
+  (cpheader "#include <sys/stat.h>")
+  (cpheader "#include <sys/ioctl.h>")
+  (cpheader "#include <time.h>")
+  (cpheader "#include <fcntl.h>")
+  (cpheader "#include <termios.h>")
+  (cpheader "#include <stdio.h>")
+  (cpheader "#include <errno.h>")
+  (cpheader "#include <unistd.h>")
+  ())
+
+#? (srvport-open-port <port> <timeout>) 
+;; open serial port <port> (e.g. <"/dev/ttyUSB0">)
+;; for reading and writing. <timeout> is the
+;; maximum time a read will wait for characters
+;; before returning (in 1/10 of a second).
+;; Returns a file descriptor on the serial port.
+;; The port is open at 1152000 bauds,
+;; with 8 bits of data, no parity, one stop bit.
+(de srvport-open-port (port timeout) 
+  ((-str-) port)
+  ((-int-) timeout)
+  (let ((fd 0))
+    ((-int-) fd)
+    #{ {struct termios  term;
+        $fd = open( $port->data, O_RDWR + O_NOCTTY + O_NONBLOCK);
+        if ($fd < 0) { 
+          printf("port=[%s]\n",(unsigned char *)($port->data));
+          error(NIL,"could not open serial port",NIL); 
+        }
+        if(ioctl($fd, TIOCEXCL) == -1) {
+          close($fd);
+          error(NIL,"cannot set exclusive access to serial port",NIL);
+        }
+        // if(fcntl($fd, F_SETFL, FNDELAY) == -1) 
+        if(fcntl($fd, F_SETFL, 0) == -1) {
+          close($fd);
+          error(NIL,"cannot set blocking IO on serial port",NIL);
+        }
+        tcgetattr($fd ,&term);  
+        cfsetispeed(&term, B1152000);
+        cfsetospeed(&term, B1152000);
+        term.c_cflag |= (CLOCAL | CREAD);
+        term.c_cflag &= ~PARENB;
+        term.c_cflag &= ~CSTOPB;
+        term.c_cflag &= ~CSIZE;
+        term.c_cflag |= CS8;
+        term.c_cflag &= ~CRTSCTS;
+        term.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+        term.c_iflag |= (IGNBRK | IGNPAR );
+        term.c_iflag &= ~ISTRIP;
+        term.c_iflag &= ~(IXON | IXOFF | IXANY);
+        term.c_oflag &= ~OPOST;
+        term.c_cc[VMIN] = 0;
+        term.c_cc[VTIME] = ($timeout);  
+        tcsetattr($fd, TCSANOW, &term);
+        tcflush($fd, TCIOFLUSH);
+    } #} 
+    fd))
+
+#? (srvport-close-port <fd>)
+;; close file descriptor <fd>.
+(de srvport-close-port (fd) ((-int-) fd) #{ close($fd); #} ())
+
+#? (srvport-write-bytes <fd> <c>)
+;; write byte <c> to file descriptor <fd>.
+;; Returns the number of bytes written.
+(de srvport-write-byte (fd c) 
+  ((-int-) fd)
+  ((-ubyte-) c)
+  (to-int #{ write($fd, &$c, 1) #}))
+
+#? (srvport-write-bytes <fd> <buffer> <n>)
+;; write <n> bytes from <buffer> (an idx1 of ubytes)
+;; to file descriptor <fd>. Returns number of bytes 
+;; written.
+(de srvport-write-bytes (fd buffer n)
+  ((-int-) fd)
+  ((-idx1- (-ubyte-)) buffer)
+  ((-int-) n)
+  (to-int #{ write($fd, IDX_PTR($buffer,unsigned char), $n) #}))
+
+#? (srvport-read-byte <fd>)
+;; read one byte from file descriptor <fd>. 
+;; Return byte on success, and -1 on failure.
+(de srvport-read-byte (fd)
+  ((-int-) fd)
+  (let ((r -1))
+    ((-int-) r)
+    #{{ unsigned char c;
+        if (0 != read($fd, &c, 1)) $r = c;
+     }#} r))
+#? (srvport-read-bytes <fd> <buffer> <nmax>)
+;; read an maximum of <nmax> bytes from file 
+;; descriptor <fd> into <buffer> (which must
+;; be an idx1 of ubytes of size at least <nmax>).
+(de srvport-read-bytes (fd buffer nmax)
+  ((-int-) fd)
+  ((-idx1- (-ubyte-)) buffer)
+  ((-int-) nmax)
+  (when (> nmax (idx-dim buffer 0)) (error "buffer too short"))
+  (let ((total 0))
+    ((-int-) total)
+    #{{ unsigned char *p;
+        int n;
+        p = IDX_PTR($buffer,unsigned char);
+        while ( ($total < $nmax) && ( 0 != (n = read($fd, p, $nmax-$total))) ) { 
+          p += n, $total += n; 
+        }
+     }#} total))
+
+#? (srvport-read-pound <fd> <nmax>)
+;; read characters from file descriptor <fd>
+;; until a hash/pound '#' charactera is found,
+;; or until <nmax> characters have been read.
+;; returns the number of characters read.
+;; If the return value is equal to <nmax+1>,
+;; no hash character was found.
+(de srvport-read-pound (fd nmax)
+  ((-int-) fd)
+  ((-int-) nmax)
+  (let ((i 0))
+    ((-int-) i)
+    #{{ unsigned char c;
+        do { read($fd, &c, 1); $i++; } while ( (c != '#') && ($i < $nmax));
+    } #} i))
+     
+#? (srvport-read-line <fd> <buffer>)
+;; read an entire line of characters from <fd>
+;; into <buffer> (in idx1 of ubytes), until
+;; a line feed character (decimal ascii code 10) 
+;; is found.
+(de srvport-read-line (fd buffer)
+  ((-int-) fd)
+  ((-idx1- (-ubyte-)) buffer)
+  (let ((mx (idx-dim buffer 0))
+	(n 0))
+    ((-int-) n mx)
+    #{  unsigned char *ptr;
+        ptr = IDX_PTR($buffer,unsigned char);
+        do {
+          read($fd, ptr++, 1);
+          // printf("%05d: %d\n",$n,*(ptr-1));
+          ($n)++;
+        } while ( (*(ptr-1) != 10) && ($n < $mx-1) );
+        read($fd, ptr++, 1);
+        if ( *(ptr-1) != 10 ) { printf("WARNING: missing LF\n"); }
+     #} n))
+  
+#? (srvport-flush <fd>)
+;; read and drop all the the pending bytes, emptying the buffer
+;; return number of bytes read.
+(de srvport-flush (fd)
+  ((-int-) fd)
+  (let ((cnt 0))
+    ((-int-) cnt)
+    #{{ int  rc;
+        unsigned char buf[8];
+        if (fcntl($fd,F_SETFL,O_NONBLOCK) == -1) { error(NIL,"cannot set non-blocking io",NIL);}
+        do {
+          rc = read($fd, buf, 8);
+          printf("%d ",rc); fflush(stdout);
+          $cnt += rc;
+        } while ( rc == 8 );
+       if (fcntl($fd,F_SETFL,0) == -1) { error(NIL,"cannot set blocking io",NIL);}
+       if (rc < 0) {
+            // Read error
+            printf("\nrc=%d", rc);
+            error(NIL,"error on read",NIL);
+       }
+      }
+    #}
+    cnt))
+
+#? (write-ubytes-to-file <f> <m>)
+;; write all bytes in <m> (and idx1 of ubytes)
+;; to file <f>. <f> is a filename string.
+(de write-ubytes-to-file (f m)
+  ((-str-) f)
+  ((-idx1- (-ubyte-)) m)
+  (let* ((n (idx-dim m 0))
+	 (r 0))
+    ((-int-) n r)
+    #{{FILE *fp;
+       if ((fp = fopen($f->data, "wb")) != NULL) {
+        $r = fwrite(IDX_PTR($m, unsigned char), 1, $n, fp);
+        fclose(fp);
+       }
+    } #} r))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make () 
+	  srvport-dummy 
+	  srvport-close-port srvport-open-port
+	  srvport-write-byte srvport-write-bytes
+	  srvport-read-byte
+	  srvport-read-bytes 
+	  srvport-read-pound
+	  srvport-read-line
+	  srvport-flush
+	  write-ubytes-to-file)
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(de test ()
+  (when (not p) (setq p (new srv1 "/dev/ttyUSB0")))
+  (when (not window) (new-window))
+  (when (not image) (setq image (ubyte-matrix 204 320 3)))
+  (==> p l20)
+  (==> p r20)
+  (sleep 0.5)
+  (setq m (==> p grab))
+  (when m 
+    (jpeg-decode m image)
+    (rgb-draw-matrix 0 0 image 2 2)))
+
+(de grab-test ()
+  (when (not p) (setq p (new srv1 "/dev/ttyUSB0")))
+  (when (not window) (new-window))
+  (when (not image) (setq image (ubyte-matrix 204 320 3)))
+  (==> p set-resolution 1)
+  (while t
+    (setq m (==> p grab))
+    (when m
+      (jpeg-decode m image)
+      (rgb-draw-matrix 0 0 image))))
+
+
+

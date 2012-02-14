@@ -1,0 +1,20 @@
+L(x) = H.tan(alpha - arctan(x/f))
+
+tan(alpha+gamma) = (tan(alpha)+tan(gamma))/(1-tan(alpha).tan(gamma))
+ ==>
+L(x) = H.(k.f-x)/(k.x+f)
+f = x.(L.k+H)/(H.k-L)
+
+(de f (x l) (/ (* x (+ h (* l k))) (- (* h k) l)))
+f = 381
+
+(de l (x) (
+
+alpha = atan(500/8.4); tan(alpha) = 500/8.4 = k
+
+x: line number reltive to middle line
+f: focal length
+H height of camera above ground = 8.4 cm
+
+x      46     12    120
+L(x)   60    180    24.3

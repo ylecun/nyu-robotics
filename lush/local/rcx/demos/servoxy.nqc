@@ -1,0 +1,67 @@
+#define PosX SENSOR_1
+#define PosY SENSOR_3
+#define MotX OUT_A
+#define MotY OUT_C
+
+int Deadzone=4;
+
+int DesX=0;
+int DeltaX=0;
+int SpeedX=7;
+
+int DesY=0;
+int DeltaY=0;
+int SpeedY=7;
+
+task servoX()
+{
+  while ( 1 ) { 
+    int del=DesX-PosX;
+    DeltaX = del;
+    if ( abs(del) > Deadzone ) {
+      SetPower(MotX, SpeedX);
+      if ( (del) > 0 ) {
+        OnFwd(MotX);
+	until ( PosX >= DesX ) { del=DesX-PosX; DeltaX=del; };
+  	Off(MotX);
+      } else {
+        OnRev(MotX);
+	until ( PosX <= DesX ) { del=DesX-PosX; DeltaX=del; };
+ 	Off(MotX);
+      }     
+    }
+  }
+  Float(MotX);
+}
+
+task servoY()
+{
+  while ( 1 ) { 
+    int del=DesY-PosY;
+    DeltaY = del;
+    if ( abs(del) > Deadzone ) {
+      SetPower(MotY, SpeedY);
+      if ( (del) > 0 ) {
+        OnFwd(MotY);
+	until ( PosY >= DesY ) { del=DesY-PosY; DeltaY=del; };
+  	Off(MotY);
+      } else {
+        OnRev(MotY);
+	until ( PosY <= DesY ) { del=DesY-PosY; DeltaY=del; };
+ 	Off(MotY);
+      }     
+    }
+  }
+  Float(MotY);
+}
+
+task main() {
+  SetSensor(PosX,SENSOR_ROTATION);
+  ClearSensor(PosX);
+  start servoX;
+
+  SetSensor(PosY,SENSOR_ROTATION);
+  ClearSensor(PosY);
+  start servoY;
+
+}

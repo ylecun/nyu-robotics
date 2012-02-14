@@ -1,0 +1,8 @@
+(libload "libimage/image-io")
+
+(de rovio-grab (user password ip)
+  (let ((f (popen (sprintf "curl -s http://%s:%s@%s/Jpeg/CamImg%d.jpg | %s JPEG:- -compress lossless -depth 8 - PPM:-" 
+			   user password ip (int (rand 0 1000)) @@*convert-cmd* ) "r")))
+    (when (not f) (error "couldn't open convert pipe file"))
+    (prog1 (pnm-fread-rgb f) (pclose f))))
+

@@ -1,0 +1,77 @@
+
+(libload "libc/stdio")
+
+
+(de get-ppm (f out)
+  ((-gptr- "FILE *") f)
+  ((-idx3- (-ubyte-)) out)
+    
+  (let ((head (fscan-str f))
+	(nlino (idx-dim out 0))
+	(ncolo (idx-dim out 1))
+	(ncmpo (idx-dim out 2)))
+    ((-int-) nlino ncolo ncmpo)
+    ;; (printf "head=%s\n" head)
+    (if (= head "P6")
+	(let* ((ncol (fscan-int f))
+	       (nlin (fscan-int f))
+	       (size (* nlin ncol))
+	       (nread 0)
+	       (ret 0))
+	  ((-int-) ncol nlin size nread ret)
+	  (when (or (<> ncol ncolo) (<> nlin nlino) (< ncmpo 3))
+	    (idx-u3resize out nlin ncol (max ncmpo 3)))
+	  (fscan-int f)
+	  (getc f)
+	  (when (or (<> 3 (idx-dim out 2)) (not (contiguep out)))
+	    (error "matrix has wrong size or is not contiguous"))
+	  (setq nread (to-int #{ fread (IDX_PTR($out, unsigned char), 3, (size_t) $size, (FILE *)$f) #}))
+	  (when (<> size nread) (setq ret -1))
+	  ret)
+      -2)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defclass dv-device object
+  ((-gptr- "FILE *") pipe)
+  ((-idx3- (-ubyte-)) buffer)
+  )
+
+(defmethod dv-device dv-device (n)
+  (setq pipe (popen (sprintf "dvgrab-lush --format ppm2 --every %d" n) "rb"))
+  (setq buffer (ubyte-matrix 240 360 3))
+  ())
+
+(defmethod dv-device -destructor () (pclose pipe) ())
+
+(defmethod dv-device get-frame ()
+  (get-ppm pipe buffer)
+  buffer)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make () get-ppm)
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; example: (dv-demo 1000 2)
+(de dv-demo (n s)
+  (new-window 10 10 380 260 "DV")
+  (let ((z (new dv-device s)))
+    (repeat n
+      (rgb-draw-matrix 10 10 (==> z get-frame)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de show-all-ppm (fn)
+  (new-window 0 0 740 500 "DV")
+  (let ((f (fopen fn "rb"))
+	(m (ubyte-matrix 480 720 3))
+	(i 0)
+	(ret 0))
+    (while (= (setq ret (get-ppm f m)) 0)
+      (sleep 0.17)
+      (rgb-draw-matrix 0 0 m)
+      (incr i))
+    (fclose f)
+    (printf "%d frames read\n" i))
+    (delete window))
+

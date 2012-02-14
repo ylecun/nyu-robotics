@@ -1,0 +1,98 @@
+;; this script let you drive a turntable, 
+;; which is controlled by a LEGO RCX brick
+
+;; first, we use nqc to compile and upload servox.nqc to RCX
+;; then, by preemptively set/get variables in servox.nqc, we can
+;; iteractively control the behavior of the program
+
+;; note that the values of slot_deadzone/slot_desx/slot_speedx totally depend on
+;; how nqc index the variables in the nqc program we uploaded to RCX
+;; the indexing can be seens by typing "nqc -L servox.nqc"
+
+;; written by Fu Jie Huang, Jan, 2003
+;; essentially copycat Yann's perl version for the same purpose
+
+(libload "rcx/rcx")
+
+(de interpret_value ( s)
+;; "two's complement" interpretation : if s>=2^15, then s=s-2^16
+  (if (> s 32767)
+      (- s 65536)
+    s))
+
+;;*******************************************************************
+(defclass servox object
+  rcx_handle
+  slot_deadzone
+  slot_desx
+  slot_deltax
+  slot_speedx)
+
+(defmethod servox servox ()
+  (let ((RCXDEVICE  "/dev/ttyS0"))
+    (setq rcx_handle (new rcx RCXDEVICE)))
+  (setq slot_deadzone 0)
+  (setq slot_desx     1)
+  (setq slot_deltax   2)
+  (setq slot_speedx   3))
+
+(defmethod servox -destructor ()
+  (delete rcx_handle))
+
+(defmethod servox upload-nqc-code ( SERVOPGM )
+  (let ((NQC        "/home/jhuangfu/download/nqc-2.5.a4/bin/nqc")
+	(RCXDEVICE  "/dev/ttyS0")
+	(PGMNUM     "2"))
+    (sys (concat NQC " " SERVOPGM ".nqc"))
+    (sys (concat NQC " -S" RCXDEVICE " -d -pgm " PGMNUM " " SERVOPGM ".rcx -run"))))
+
+(defmethod servox init-vars ( angle speed deadzone )
+  (==> rcx_handle set_var slot_deadzone deadzone)
+  (==> rcx_handle set_var slot_speedx   speed)
+  (==> rcx_handle set_var slot_desx     angle))
+
+(defmethod servox x-turnto ( angle )
+  (let ((deadzone (==> rcx_handle get_var slot_deadzone))
+	(degtoticks (/ 2716 360))
+	(deltax 0))
+    (==> rcx_handle set_var slot_desx (int (* angle degtoticks)))
+    (do-while (> deltax deadzone)
+	(setq deltax (abs (interpret_value (==> rcx_handle get_var slot_deltax)))))
+    ()))
+
+
+;;*******************************************************************
+
+(defclass servoxy servox
+  slot_desy
+  slot_deltay
+  slot_speedy)
+
+(defmethod servoxy servoxy ()
+   (let ((RCXDEVICE  "/dev/ttyS0"))
+    (setq rcx_handle (new rcx RCXDEVICE)))
+  (setq slot_deadzone 0)
+
+  (setq slot_desx     1)
+  (setq slot_deltax   2)
+  (setq slot_speedx   3)
+
+  (setq slot_desy     4)
+  (setq slot_deltay   5)
+  (setq slot_speedy   6))
+
+(defmethod servoxy init-vars ( anglex angley speed deadzone )
+  (==> rcx_handle set_var slot_deadzone deadzone)
+  (==> rcx_handle set_var slot_speedx   speed)
+  (==> rcx_handle set_var slot_speedy   speed)
+  (==> rcx_handle set_var slot_desx     anglex)
+  (==> rcx_handle set_var slot_desy     angley))
+
+(defmethod servoxy y-turnto (angle)
+ (let ((deadzone (==> rcx_handle get_var slot_deadzone))
+	(degtoticks (/ 5765 360))
+	(deltay 0))
+    (==> rcx_handle set_var slot_desy (int (* angle degtoticks)))
+    (do-while (> deltay deadzone)
+	(setq deltay (abs (interpret_value (==> rcx_handle get_var slot_deltay)))))
+    ()))

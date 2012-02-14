@@ -1,0 +1,52 @@
+
+(libload "opencv/aux_const")
+(libload "libimage/image-io")
+(libload "opencv/aux_object")
+(libload "opencv/aux_convert")
+(libload "opencv/cv-config")
+
+(eval `(de |dummy_cvimage| () ,cv-cpheader-cmd ()))
+
+#? (cvimage-read-rgb <imagefile>)
+;; read an image and return a 
+;; cvimage object with it.
+(de cvimage-read-rgb (filename)
+  ((-str-) filename)
+  (let* ((buf_idx (image-read-rgb filename))
+	 (ret_img (new cvimage 
+		       (idx-dim buf_idx 1) 
+		       (idx-dim buf_idx 0) 
+		       @IPL_DEPTH_8U 3)))
+    (idx8u_ipl buf_idx  :ret_img:p)
+    ret_img))
+
+#? (cvimage-draw <x> <y> <cvimage> [<zoomx> <zoomy>])
+;; Display an OpenCV image in the current window
+;; at coordinates <x> <y> with optional integer zoom 
+;; factors <zoomx> <zoomy>.
+(de cvimage-draw (x y img &optional (zx 1) (zy 1))
+  ((-obj- (cvimage)) img)
+  (let ((img-idx (ubyte-matrix 1 1 1)))
+    (ipl8u_idx  :img:p  img-idx)
+    (if (>= (idx-dim img-idx 2) 3)
+	(rgb-draw-matrix x y img-idx zx zy)
+      (rgb-draw-matrix x y (select img-idx 2 0) zx zy))))
+
+#? (cvimage-show <cvimage> [<title>])
+;; open a suitably sized X11 window and 
+;; display OpenCV image <cvimage> in it.
+;; return the window object. The returned window
+;; should be set to a variable, otherwise the window
+;; will disappear at the next evaluation.
+;; The window will be closed when the variable
+;; is set to something else (or when the window is
+;; closed by hand).
+(de cvimage-show (img &optional (title "Lush/OpenCV image"))
+  ((-obj- (cvimage)) img)
+  (let ((window (x11-window 0 0 (==> img get-width) (==> img get-height) title)))
+    (cvimage-draw 0 0 img)
+    window))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(dhc-make () |dummy_cvimage| cvimage-read-rgb)

@@ -1,0 +1,9 @@
+
+(libload "idx-float")
+
+(defparameter pi 3.1415927)
+
+
+#? (f <x>)
+;; computes the square of <x>.
+(de f (x) (* x x))

@@ -1,0 +1,35 @@
+#define PosX SENSOR_1
+#define MotX OUT_A
+
+int Deadzone=4;
+
+int DesX=0;
+int DeltaX=0;
+int SpeedX=7;
+
+task servoX()
+{
+  while ( 1 ) { 
+    int del=DesX-PosX;
+    DeltaX = del;
+    if ( abs(del) > Deadzone ) {
+      SetPower(MotX, SpeedX);
+      if ( (del) > 0 ) {
+        OnFwd(MotX);
+	until ( PosX >= DesX ) { del=DesX-PosX; DeltaX=del; };
+  	Off(MotX);
+      } else {
+        OnRev(MotX);
+	until ( PosX <= DesX ) { del=DesX-PosX; DeltaX=del; };
+ 	Off(MotX);
+      }     
+    }
+  }
+  Float(MotX);
+}
+
+task main() {
+  SetSensor(PosX,SENSOR_ROTATION);
+  ClearSensor(PosX);
+  start servoX;
+}

@@ -1,0 +1,114 @@
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defclass jack-synth object
+  ((-gptr-) jackhandle)
+  ((-gptr-) outputport)
+  ((-int-) rate)
+  ((-idx1- (-double-)) params)
+  )
+
+(defmethod jack-synth jack-synth (clientname)
+  ((-str-) clientname)
+  (setq params (double-matrix 10))
+  #{{jack_client_t *jack_handle;
+     if ((jack_handle = jack_client_new(STRING_DATA($clientname))) == 0) {
+         run_time_error("cannot connect to jack server\n");
+     }
+     $outputport = (void *)jack_port_register(jack_handle, "Out", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+     jack_set_process_callback(jack_handle, playback_callback, IDX_PTR($params,double) );
+     $rate = jack_get_sample_rate(jack_handle);
+     goutput_port = (jack_port_t *)$outputport;
+     $jackhandle = (void*)jack_handle;
+
+     if (jack_activate(jack_handle)) {
+       run_time_error("cannot activate client");
+     }
+
+  }#} 
+  (params 0 rate)			; sampling rate
+  (params 1 69)				; note
+  (params 2 1)				; volume
+  )
+
+(defmethod jack-synth set (pitch vol)
+  (params 1 pitch)
+  (params 2 vol))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(de get-note () (to-double #{ gnote #}))
+(de set-note (x) ((-double-) x) #{ gnote = $x #} x)
+
+(de get-vol () (to-double #{ gvolume #}))
+(de set-vol (x) ((-double-) x) #{ gvolume = $x #} x)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(dhc-make-with-libs
+  ()
+  '("/usr/lib/libjack.so")
+  #{ 
+    #include <jack/jack.h>
+    #include <math.h>
+    #include <string.h>
+    #define STRING_DATA(s) (char *)(s->data)
+
+    /* 
+    static double gnote = 20;
+    static double gvolume = 1;
+    int grate;
+    */
+    double phi = 0;
+    jack_port_t *goutput_port;
+
+    int playback_callback(jack_nframes_t nframes, void *arg) {
+      jack_default_audio_sample_t *buf;
+      int i;
+      double dphi, f;
+      double *params, grate, gnote, gvolume;
+
+      params = (double *)arg;
+      grate = params[0];
+      gnote = params[1];
+      gvolume = params[2];
+      buf = (jack_default_audio_sample_t *)jack_port_get_buffer(goutput_port, nframes);
+      memset(buf, 0, nframes * sizeof(jack_default_audio_sample_t));
+      /* note 69 is middle A 440 Hz.
+         The constant is 440/(k^69) where k=2^(1/12)
+      */
+      f = 8.1757989 * exp( gnote * log(2.0)/12.0 );
+
+      /* f = 8.176 * exp((double)gnote*log(2.0)/12.0); */
+      dphi = f / grate;
+      for (i = 0; i < nframes; i++) {
+        buf[i] = gvolume * sin(6.2831854 * phi);
+        phi += dphi;
+        while (phi < 0) phi += 1.0;
+        while (phi > 1.0) phi -= 1.0;
+      }
+      return(0);
+    }
+
+    /*
+    int ts_callback(jack_nframes_t nframes, void *arg) {
+      int i;
+      jack_default_audio_sample_t *buf;
+      buf = (jack_default_audio_sample_t *)jack_port_get_buffer(goutput_port, nframes);
+      memset(buf, 0, nframes * sizeof(jack_default_audio_sample_t));
+      for (i = 0; i < nframes; i++) {
+        struct CClass_ts *p;
+        p = (struct CClass_ts *)arg;
+        buf[i] = p->Vtbl->M_update(p,0);
+      }
+      return(0);
+    }
+    */
+
+  #}
+  (jack-synth jack-synth)
+  )
+
+
+

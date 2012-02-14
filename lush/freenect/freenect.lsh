@@ -1,0 +1,182 @@
+(defclass freenect object
+  ((-idx3- (-ubyte-)) rgb0)
+  ((-idx3- (-ubyte-)) rgb1)
+  ((-idx2- (-short-)) depth0)
+  ((-idx2- (-short-)) depth1)
+  ((-int-) rgblast)
+  ((-int-) depthlast)
+  ((-int-) rgb-frames)
+  ((-int-) depth-frames)
+  )
+
+(defmethod freenect freenect (n)
+    ((-int-) n)
+    (setq rgb0 (ubyte-matrix 480 640 3))
+    (setq rgb1 (ubyte-matrix 480 640 3))
+    (setq depth0 (short-matrix 480 640))
+    (setq depth1 (short-matrix 480 640))
+    (setq rgb-frames 0)
+    (setq depth-frames 0)
+    (setq rgblast 0)
+    (setq depthlast 0)
+    #{{int nr_device, res;
+       res = freenect_init(&f_ctx, NULL); 
+       freenect_set_log_level(f_ctx, FREENECT_LOG_DEBUG);
+       freenect_select_subdevices(f_ctx, (freenect_device_flags)(FREENECT_DEVICE_CAMERA));
+       nr_device = freenect_num_devices (f_ctx);
+       if (nr_device < 1) run_time_error("no kinect found");
+       if (freenect_open_device(f_ctx, &f_dev, $n) < 0) {
+         run_time_error("Could not open device\n");
+       }
+       freenect_set_video_mode(f_dev, freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_RGB));
+       freenect_set_depth_mode(f_dev, freenect_find_depth_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_DEPTH_11BIT));
+       // freenect_set_depth_mode(f_dev, freenect_find_depth_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_DEPTH_MM));
+
+       freenect_rgb_frames = 0;
+       freenect_depth_frames = 0;
+       freenect_rgb_buffer0 = (void*)(IDX_PTR($rgb0,unsigned char));
+       freenect_depth_buffer0 = (void*)(IDX_PTR($depth0,unsigned short));
+       freenect_rgb_buffer1 = (void*)(IDX_PTR($rgb1,unsigned char));
+       freenect_depth_buffer1 = (void*)(IDX_PTR($depth1,unsigned short));
+
+       freenect_set_video_buffer(f_dev, freenect_rgb_buffer0);
+       freenect_set_depth_buffer(f_dev, freenect_depth_buffer0);
+       freenect_set_depth_callback(f_dev, depth_callback);
+       freenect_set_video_callback(f_dev, rgb_callback);
+       freenect_start_video(f_dev);
+       freenect_start_depth(f_dev);
+       res = pthread_create(&fnkt_thread, NULL, freenect_threadfunc, NULL);
+       if (res) { run_time_error("pthread_create failed\n"); }
+     }#} ())
+
+(defmethod freenect update ()
+  (setq rgblast (to-int #{ rgblast #}))
+  (setq depthlast (to-int #{ depthlast #}))
+  (setq rgb-frames (to-int #{ freenect_rgb_frames #}))
+  (setq depth-frames (to-int #{ freenect_depth_frames #})))
+
+(defmethod freenect get-rgb ()
+  (==> this update)
+  (if (= 0 rgblast) rgb0 rgb1))
+
+(defmethod freenect get-depth ()
+  (==> this update)
+  (if (= 0 depthlast) depth0 depth1))
+
+
+(defmethod freenect -destructor ()
+  #{ 
+     freenect_stop_depth(f_dev);
+     freenect_stop_video(f_dev);
+     freenect_die = 1;
+     pthread_join(fnkt_thread,NULL);
+     freenect_close_device(f_dev);
+     freenect_shutdown(f_ctx);
+  #} ())
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de process-depth (din dout)
+  ((-idx2- (-short-)) din)
+  ((-idx2- (-float-)) dout)
+  (cidx-bloop ("i" "j" ("din" din) ("dout" dout))
+    #{ *dout = (float)(*din)*255/2048; #})
+  ())
+	      
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de fntest ()
+  (when (not window) (new-window 0 0 1280 480 "asd"))
+  (let* ((q (new freenect 0))
+	 (d (float-matrix 480 640))
+	 (cv 0) (cd 0))
+    (==> q update)
+    (setq cv :q:rgb-frames)
+    (setq cd :q:depth-frames)
+    (while t
+      (==> q update)
+      (rgb-draw-matrix 0 0 (==> q get-rgb))
+      (let ((rawd (==> q get-depth))) (process-depth rawd d))
+      (rgb-draw-matrix 640 0 d)
+      (setq cv :q:rgb-frames)
+      (setq cd :q:depth-frames))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make-with-libs 
+  ()
+  '("/usr/lib/libfreenect.so" "/usr/lib/libfreenect_sync.so")
+   #{ 
+     #include <libfreenect.h>
+     #include <pthread.h>
+     #include <stdio.h>
+
+     volatile int freenect_die;
+     static int freenect_rgb_frames = 0;
+     static int freenect_depth_frames = 0;
+     static int rgblast = 0;
+     static int depthlast = 0;
+
+     static freenect_device *f_dev;
+     static freenect_context *f_ctx;
+     static unsigned char *freenect_rgb_buffer0;
+     static unsigned char *freenect_rgb_buffer1;
+     static unsigned short *freenect_depth_buffer0;
+     static unsigned short *freenect_depth_buffer1;
+
+     pthread_t fnkt_thread;
+     pthread_mutex_t buf_mutex = PTHREAD_MUTEX_INITIALIZER;
+     // pthread_cond_t frame_cond = PTHREAD_COND_INITIALIZER;
+
+     void *freenect_threadfunc(void* arg) {
+       int res;
+       while(!freenect_die) { 
+         res=freenect_process_events(f_ctx); 
+         if ( (res<0) && (res!=-10) ) {
+           // printf("threadfunc returns %d\n",res);
+           freenect_die = 1;
+         }
+       }
+       printf("threadfunc died %d\n",res);
+       return NULL;
+     }
+
+     // this is called by libfreenect whenever a depth image is available.
+     // This uses a ping-pong double buffer. One buffer is made available while
+     // the other is being filled.
+     void depth_callback(freenect_device *dev, void *depth, uint32_t timestamp) {
+       pthread_mutex_lock(&buf_mutex);
+       if (depthlast == 0) {
+         freenect_set_depth_buffer(f_dev, freenect_depth_buffer0);       
+         depthlast = 1;
+       } else {
+         freenect_set_depth_buffer(f_dev, freenect_depth_buffer1);       
+         depthlast = 0;
+       }
+       freenect_depth_frames++;
+       // pthread_cond_signal(&frame_cond);
+       pthread_mutex_unlock(&buf_mutex);
+     }
+ 
+     // this is called by libfreenect whenever an rgb image is available.
+     // This uses a ping-pong double buffer. One buffer is made available while
+     // the other is being filled.
+     void rgb_callback(freenect_device *dev, void *rgb, uint32_t timestamp) {
+       pthread_mutex_lock(&buf_mutex);
+       if (rgblast == 0) {
+         freenect_set_video_buffer(f_dev, freenect_rgb_buffer0);       
+         rgblast = 1;
+       } else {
+         freenect_set_video_buffer(f_dev, freenect_rgb_buffer1);       
+         rgblast = 0;
+       }
+       freenect_rgb_frames++;
+       // pthread_cond_signal(&frame_cond);
+       pthread_mutex_unlock(&buf_mutex);
+     }
+   #}
+  (freenect freenect update -destructor)
+  process-depth
+  )
+
+        

@@ -1,0 +1,64 @@
+
+(libload "devices/serial")
+
+(defclass roomba-port object
+  port
+  )
+
+(defmethod roomba-port roomba-port (d)
+  (setq port (new serial-port d 57600 8 "N" 1))
+  ;; initialize SCI, wake up roomba
+  (==> port write-byte 128)
+  ;; put roomba under user control in safe mode
+  (==> port write-byte 130)
+  ())
+
+
+;; The first argument <velocity> specifies the average velocity of the
+;; drive wheels in millimeters per second (mm/s) from -500 to +500.
+;; The optional second argument <radius> specifies the radius, in millimeters,
+;; at which Roomba should turn (from -2000 to +2000). The longer radii
+;; make Roomba drive straighter. Shorter radii make it turn more. A
+;; Drive command with a positive velocity and a positive radius will
+;; make Roomba drive forward while turning toward the left. A negative
+;; radius will make it turn toward the right. When the radius argument is
+;; not present, the robot drives straight. When the first argument is
+;; 0, the robot turns in place.
+(defmethod roomba-port drive (velocity &optional radius)
+  (if radius
+      (let* ((vi (int (+ 0.5 velocity)))
+	     (vh (bitshr vi 8))
+	     (vl (bitand vi 255))
+	     (ri (int (+ 0.5 radius)))
+	     (rh (bitshr ri 8))
+	     (rl (bitand ri)))
+	(==> port write-byte 137)
+	(==> port write-byte vh)
+	(==> port write-byte vl)
+	(==> port write-byte rh)
+	(==> port write-byte rl))
+      (let* ((vi (int (+ 0.5 velocity)))
+	     (vh (bitshr vi 8))
+	     (vl (bitand vi 255)))
+	(==> port write-byte 137)
+	(==> port write-byte vh)
+	(==> port write-byte vl)
+	(==> port write-byte 128)
+	(==> port write-byte 0))) ())
+
+;; <n> number between 0 and 63 to turn on or off various LEDs
+;; <pcol> color of power led 0=green, 255=red
+;; <pintensity> intensity of power led 0..255.
+(defmethod roomba-port leds (n pcol pintensity)
+  (==> port write-byte 139)
+  (==> port write-byte (bitand n 63))
+  (==> port write-byte (max 0 (min 255 pcol)))
+  (==> port write-byte (max 0 (min 255 pintensity))))
+
+(defmethod roomba-port sensors (c)
+  (==> port write-byte 142)
+  (setq c (bitand c 3))
+  (==> port write-byte (bitand c 3))
+  (let* ((n (selectq c (0 26) (1 10) (2 6) (3 10)))
+	 (r (ubyte-matrix n)))
+    (==> port read-bytes r) r))
