@@ -1,0 +1,26 @@
+<html>
+<head>
+<title> Roomba Camera </title>
+<link href="roombapanel.css" rel="stylesheet" type="text/css">
+<script language="JavaScript">
+<!--
+function refreshIt() {
+   if (!document.images) return;
+      document.images['SpcaPic'].src = 'SpcaPict.jpg?' + Math.random();
+      setTimeout('refreshIt()',2000); // call again in 2000 milliseconds
+ }
+//-->
+</script>
+</head>
+<body onLoad=" setTimeout('refreshIt()',5000)">
+<center>
+ 
+<h2> Roomba Camera </h2>
+
+<img src="SpcaPict.jpg" name="SpcaPic">
+<br/>
+Image refreshed every 2 seconds.
+
+</center>
+</body>
+</html>

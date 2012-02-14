@@ -1,0 +1,14 @@
+
+html, body, table, td {
+  font-family: Verdana, Helvetica, sans-serif;
+  font-size: 10pt; font-weight: bold;
+  text-align: center;
+}
+table { background-color:#eee; padding: 5px; }
+td { padding: 10px; }
+a { 
+  padding: 7px; background-color:#aaa;
+  color:#00f;  text-decoration:none;
+}
+a:hover { color:#00d; background-color:#888; }
+
