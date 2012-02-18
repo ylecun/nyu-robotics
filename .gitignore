@@ -7,3 +7,4 @@ lush/include/lushconf.h
 lush/include/lushmake.h
 lush/src/lush
 lush/sys/stdenv.dump
+lush/local/**/C/
