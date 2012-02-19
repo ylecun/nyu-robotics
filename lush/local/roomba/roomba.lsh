@@ -1,0 +1,295 @@
+
+;; Driving a roomba create through the serial port interface
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(libload "libc/make")
+(libload "libidx/idx-macros")
+
+
+;; compile and load roombalib
+(let* ((dir (dirname file-being-loaded))
+       (lm (new lushmake dir)) )
+  (==> lm rule "roombalib.o" '("roombalib.c" "roombalib.h") cmd)
+  (==> lm make)
+  (==> lm load) )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? *** Roomba Interface
+
+
+#? ** roomba class
+;; roomba object class
+(defclass roomba object
+  ((-idx1- (-ubyte-)) sensors)
+  ((-gptr-) roombaptr))
+
+#? (new roomba <port>)
+;; create a new roomba object connected to a roomba
+;; on serial port <portname>. <portname> will generally 
+;; be of the form "/dev/ttyUSB0" or "/dev/ttyUSB1" 
+;; The destructor automatically closes the port.
+(defmethod roomba roomba (portname)
+  ((-str-) portname)
+  #{ $roombaptr = (void*)(roomba_init(SADD($portname))); 
+     if ($roombaptr == NULL) { run_time_error("could not open roomba port"); } 
+  #}
+  (setq sensors (ubyte-matrix 52))
+  ())
+
+(defmethod roomba -destructor ()
+  (when roombaptr
+    #{ roomba_free( (Roomba *)$roombaptr ); #})
+  ())
+
+#? * roomba control functions
+
+#? (==> <roomba> drive <velocity> <radius>)
+;; low-level drivin function. <velocity> is a speed
+;; between -500 mm/s (backward) and 500 mm/s (forward).
+;; <radius> is a radius of turn in mm between -2000
+;; and 2000. To drive straight, <radius> must be given
+;; the special value 32767.
+(defmethod roomba drive (velocity radius)
+  ((-double-) velocity)
+  ((-double-) radius)
+  #{ roomba_drive((Roomba*)($roombaptr), (int)($velocity), (int)($radius)); #} ())
+
+#? (==> <roomba> drive-direct <vleft <vright>)
+;; very low-level driving function. <vleft> and
+;; <vright> are the linear speeds of the two wheels
+;; in mm/s, both of which are between -500 mm/s and +500 mm/s.
+(defmethod roomba drive-direct (vleft vright)
+  ((-double-) vleft vright)
+  #{ roomba_drive_direct((Roomba*)($roombaptr), (int)($vleft), (int)($vright)); #} ())
+
+#? (==> <roomba> stop)
+;; stop all motors
+(defmethod roomba stop ()
+  #{ roomba_stop((Roomba*)($roombaptr)); #} ())
+
+#? (==> <roomba> forward-at <velocity>)
+;; drive forward at speed <velocity> (between -500 mm/s and +500 mm/s).
+(defmethod roomba forward-at (velocity)
+  ((-double-) velocity)
+  #{ roomba_forward_at((Roomba*)($roombaptr), (int)$velocity); #} ())
+
+#? (==> <roomba> backward-at <velocity>)
+;; drive backward at speed <velocity> (between -500 mm/s and +500 mm/s).
+(defmethod roomba backward-at (velocity)
+  ((-double-) velocity)
+  #{ roomba_backward_at((Roomba*)($roombaptr), (int)$velocity); #} ())
+
+#? (==> <roomba> spin-left-at <velocity>)
+;; spin left at minimum turning radius while driving at
+;; spped <velocity> (between -500 mm/s and +500 mm/s).
+(defmethod roomba spinleft-at (velocity)
+  ((-double-) velocity)
+  #{ roomba_spinleft_at((Roomba*)($roombaptr), (int)$velocity); #} ())
+
+#? (==> <roomba> spin-right-at <velocity>)
+;; spin right at minimum turning radius while driving at
+;; spped <velocity> (between -500 mm/s and +500 mm/s).
+(defmethod roomba spinright-at (velocity)
+  ((-double-) velocity)
+  #{ roomba_spinright_at((Roomba*)($roombaptr), (int)$velocity); #} ())
+
+#? (==> <roomba> digital-out <byte>)
+;; Set the 3 digital output bits on the expansion port.
+;; <byte> is an unsigned byte between 0 and 7.
+;; On the TurtleBot, the least-significant bit switches
+;; the power to the Kinect on or off.
+(defmethod roomba digital-out (bits)
+  ((-ubyte-) bits)
+  #{ roomba_digital_out((Roomba*)($roombaptr), $bits); #} ())
+
+#? (==> <roomba> kinect-on)
+;; Turn power on to the Kinect on the turtlebot.
+;; This simply sets the digital-out to 1
+(defmethod roomba kinect-on () (==> this digital-out 1))
+
+#? (==> <roomba> kinect-off)
+;; Turn power off to the Kinect on the turtlebot.
+;; This simply sets the digital-out to 1
+(defmethod roomba kinect-off () (==> this digital-out 0))
+
+#? * roomba sensor access
+;; The roomba object contains a vector slot of 
+;; 52 ubytes that contains the raw readings from 
+;; all the roomba sensors. 
+;; The values are read and update from the roomba
+;; through the <read-sensors> method.
+
+#? (==> <roomba> read-sensors <group>)
+;; This method updates the values of subsets 
+;; of the sensors by reading them from the roomba. 
+;; There are 7 possible groups of sensors that 
+;; can be read at once, determined by the argument 
+;; <group> (an integer between 0 and 6)
+;; Sensor groups are documented at page 147 of the Roomba 
+;; Create manual. Groups 0-5 update only a subset of the 
+;; sensors, while group 6 reads all the sensors.
+;; group 0 (7-26): safety sensors + infrared + odometry + battery state
+;; group 1 (7-16); safety sensors
+;; group 2 (17-20): infrared + odometry
+;; group 3 (21-26): battery state
+;; group 4 (27-34): signal strength + epansion port inputs
+;; group 5 (35-42): status
+;; group 6 (7-42): all sensors
+(defmethod roomba read-sensors (group)
+  ((-int-) group)
+  (let ((err 0))
+    ((-int-) err)
+    (idx-u1resize sensors 52)
+    #{ $err = roomba_read_sensors((Roomba*)($roombaptr), $group); 
+       memcpy(IDX_PTR($sensors, uint8_t), ((Roomba *)$roombaptr)->sensor_bytes, 26);
+    #} err))overcurrent
+
+#? (==> <roomba> bumpers)
+;; sensor 7. Bumpers and wheel drops
+;; bits: 4:caster-drop, 3:left-drop, 2:right-drop, 
+;; 1:bumper-left, 0:bumper-left
+(defmethod roomba bumpers () (sensors 0)) ; 7
+#? (==> <roomba> wall)
+;; sensor 8. 0=no-wall, 1=wall-seen.
+(defmethod roomba wall () (sensors 1))	; 8
+#? (==> <roomba> cliff-left)
+;; sensor 9.
+(defmethod roomba cliff-left () (sensors 2)) ; 9
+#? (==> <roomba> cliff-front-left)
+;; sensor 10.
+(defmethod roomba cliff-front-left () (sensors 3)) ; 10
+#? (==> <roomba> cliff-front-right)
+;; sensor 11.
+(defmethod roomba cliff-front-right () (sensors 4)) ; 11
+#? (==> <roomba> cliff-right)
+;; sensor 12.
+(defmethod roomba cliff-right () (sensors 5)) ; 12
+#? (==> <roomba> wirtual-wall)
+;; sensor 13.
+(defmethod roomba wirtual-wall () (sensors 6)) ; 13
+#? (==> <roomba> overcurrent)
+;; sensor 14. Bits: 4:left-wheel-overcurrent, 3:right-wheel-overcurrent
+;; 2:low-side-driver-2, 1:low-side-driver-0, 1:low-side-driver-1.
+(defmethod roomba overcurrent () (sensors 7)) ; 14
+#? (==> <roomba> infrared)
+;; Sensor 17. Infrared codes from remote or dock.
+;; See page 147 of Roomba Create manual for details.
+(defmethod roomba infrared () (sensors 10)) ; 17
+#? (==> <roomba> buttons)
+;; sensor 18. Buttons. Bits: 2:advance, 0:play.
+(defmethod roomba buttons () (sensors 11)) ; 18
+#? (==> <roomba> distance)
+;; sensor 19. Distance traveled in mm since last update.
+;; sum of distances traveled by each wheel divided by 2.
+(defmethod roomba distance () (bytes2short sensors 12)) ; 19
+#? (==> <roomba> angle)
+;; sensor 20. Angle in degrees that the robot has turned since last
+;; update. Positive = counter-clockwise
+(defmethod roomba angle () (bytes2short sensors 14)) ; 20
+#? (==> <roomba> charging-state)
+;; sensor 21. 0=not charging.
+(defmethod roomba charging-state () (sensors 16)) ; 21
+#? (==> <roomba> voltage)
+;; sensor 22. Battery voltage in mV.
+(defmethod roomba voltage () (bytes2short sensors 17)) ; 22
+#? (==> <roomba> current)
+;; sensor 23. Battery current in mA.
+(defmethod roomba current () (bytes2short sensors 19)) ; 23
+#? (==> <roomba> battery-temperature)
+;; sensor 24. Battery temperature in Celsius.
+(defmethod roomba battery-temperature () (sensors 21)) ; 24
+#? (==> <roomba> battery-charge)
+;; sensor 25. Battery charge in mAh.
+(defmethod roomba battery-charge () (bytes2short sensors 22)) ; 25
+#? (==> <roomba> battery-capacity)
+;; sensor 26. Battery total capacity in mAh.
+(defmethod roomba battery-capacity () (bytes2short sensors 24)) ; 26
+#? (==> <roomba> wall-signal)
+;; sensor 27. Strength of wall sensor signal (0-4095).
+(defmethod roomba wall-signal () (bytes2short sensors 26)) ; 27
+#? (==> <roomba> cliff-left-signal)
+;; sensor 28. Strength of cliff left sensor signal (0-4095).
+(defmethod roomba cliff-left-signal () (bytes2short sensors 28)) ; 28
+#? (==> <roomba> cliff-front-left-signal)
+;; sensor 29. Strength of cliff front left sensor signal (0-4095).
+(defmethod roomba cliff-front-left-signal () (bytes2short sensors 30)) ; 29
+#? (==> <roomba> cliff-front-right-signal)
+;; sensor 30. Strength of cliff front right sensor signal (0-4095).
+(defmethod roomba cliff-front-right-signal () (bytes2short sensors 32)) ; 30
+#? (==> <roomba> cliff-right-signal)
+;; sensor 31. Strength of cliff right sensor signal (0-4095).
+(defmethod roomba cliff-right-signal () (bytes2short sensors 34)) ; 31
+#? (==> <roomba> digital-inputs)
+;; sensor 32. Digital input from cargo-bay expansion connector.
+;; Bits: 4:device detect, 3:input3 (pin6), 2:input2 (pin 18),
+;; 1:input1 (pin5), 0:input0 (pin 17).
+(defmethod roomba digital-inputs () (sensors 36)) ; 32
+#? (==> <roomba> analog-signal)
+;; sensor 33. 10-bit analog value on pin 25 of expansion port.
+;; Connected to the yaw gyro on the Turtlebot (0-1023).
+(defmethod roomba analog-signal () (bytes2short sensors 37)) ; 33
+#? (==> <roomba> charging-source-available)
+;; sensor 34. Bits: 0:internal charge, 1:home base.
+(defmethod roomba charging-source-available () (sensors 39)) ; 34
+#? (==> <roomba> oi-mode)
+;; sensor 35. home base and charger connection.
+;; 0=off, 1=passive, 2=safe, 3=full.
+(defmethod roomba oi-mode () (sensors 40)) ; 35
+#? (==> <roomba> song-number)
+;; sensor 36. currently selected song (0-15).
+(defmethod roomba song-number () (sensors 41)) ; 36
+#? (==> <roomba> song-playing)
+;; sensor 37. currently playing song 0=not-playing, 1=playing.
+(defmethod roomba song-playing () (sensors 42)) ; 37
+#? (==> <roomba> number-of-stream-packets)
+;; sensor 38. 
+(defmethod roomba number-of-stream-packets () (sensors 43)) ; 38
+#? (==> <roomba> requested-velocity)
+;; sensor 39. 
+(defmethod roomba requested-velocity () (bytes2short sensors 44)) ; 39
+#? (==> <roomba> requested-radius)
+;; sensor 40. 
+(defmethod roomba requested-radius () (bytes2short sensors 46)) ; 40
+#? (==> <roomba> requested-right-velocity)
+;; sensor 41. 
+(defmethod roomba requested-right-velocity () (bytes2short sensors 48)) ; 41
+#? (==> <roomba> requested-left-velocity)
+;; sensor 42. 
+(defmethod roomba requested-left-velocity () (bytes2short sensors 50)) ; 42
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? ** roomba low-level functions
+
+#? (bytes2short <m> <n>) 
+;; interpret bytes <n> and <n+1> in vector <m>
+;; as the hi and lo bytes of a short,
+;; and return that short converted to double.
+(de bytes2short (m n) 
+  ((-idx1- (-ubyte-)) m) 
+  ((-int-) n)
+  (let ((r 0)) 
+    ((-double-) r)
+    #{{ uint8_t *p = IDX_PTR($m, uint8_t);
+        $r = (double)( (p[$n]<<8) + p[$n+1] );
+    }#} r))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make 
+ ()
+ #{ #include "../roombalib.h" #}
+ bytes2short
+ (roomba roomba -destructor drive drive-direct
+	 forward-at backward-at spinleft-at spinright-at
+	 stop digital-out read-sensors))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de roomba-test ()
+  (let ((r (new roomba "/dev/ttyUSB0"))
+	(s (ubyte-matrix 26)))
+    (==> r forward-at 100)
+    (==> r read-sensors s) (pretty s)
+    (sleep 1)
+    (==> r read-sensors s) (pretty s)
+    (==> r stop)
+    ()))
