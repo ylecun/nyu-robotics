@@ -9,3 +9,4 @@ lush/src/lush
 lush/sys/stdenv.dump
 lush/local/**/C/
 *.swp
+lush/Makefile
