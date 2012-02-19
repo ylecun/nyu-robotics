@@ -1,0 +1,31 @@
+#? (rospath <package-name>)
+;; Return the full path to the ros package.
+(de rospath (package-name)
+  ;; TODO(reissb) -- 20120218 -- Can't figure out how to change the paths
+  ;;   used by sh subprocesses invoked by (sys) function.
+  (if (= "roscpp" package-name)
+    "/opt/ros/electric/stacks/ros_comm/clients/cpp/roscpp"
+    (if (= "std_msgs" package_name)
+      "/opt/ros/electric/stacks/ros_comm/messages/std_msgs"
+      (if (= "rostime" package-name)
+        "/opt/ros/electric/stacks/ros_comm/utilities/rostime"
+        (if (= "rosconsole" package-name)
+          "/opt/ros/electric/stacks/ros_comm/tools/rosconsole"
+          (if (= "cpp_common" package-name)
+            "/opt/ros/electric/stacks/ros_comm/utilities/cpp_common"
+            (if (= "roscpp_serialization" package-name)
+              "/opt/ros/electric/stacks/ros_comm/clients/cpp/roscpp_serialization"
+              (if (= "roscpp_traits" package-name)
+                "/opt/ros/electric/stacks/ros_comm/clients/cpp/roscpp_traits"
+                (if (= "xmlrpcpp" package-name)
+                  "/opt/ros/electric/stacks/ros_comm/utilities/xmlrpcpp"
+                  ()
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )

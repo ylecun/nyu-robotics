@@ -1,0 +1,133 @@
+(libload "ros/ros")
+
+;; Add include paths for roscpp.
+(setq c-include-path (cons (concat (rospath "roscpp")
+                           "/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "rostime")
+                           "/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "rosconsole")
+                           "/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "std_msgs")
+                           "/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "cpp_common")
+                           "/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "roscpp_serialization")
+                           "/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "roscpp_traits")
+                           "/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "xmlrpcpp")
+                           "/src") c-include-path))
+
+(setq c-include-path (cons (concat (rospath "std_msgs")
+                           "/msg_gen/cpp/include") c-include-path))
+
+#? turtlebot
+;; Control interface for the ROS turtlebot.
+(defclass turtlebot object
+;;  ((-float-) pos-x)
+  )
+
+(defmethod turtlebot turtlebot ()
+  ()
+  )
+
+(defmethod turtlebot -destructor ()
+  ()
+  )
+
+;;#? (turtlebot_set-pos-x <x>)
+;;;; Set the turtlebot position x-coordinate.
+;;(defmethod turtlebot set-pos-x (x)
+;;  (setq pos-x x)
+;;  )
+;;
+;;#? (turtlebot_set-pos-x <x>)
+;;;; Get the turtlebot position y-coordinate.
+;;(defmethod turtlebot get-pos-x ()
+;;  pos-x
+;;  )
+
+#? (turtlebot_start-stream-chatter <>)
+;; Initialize the client.
+(defmethod turtlebot start-stream-chatter ()
+  (to-int #{ g_client.StartStreamChatter() #})
+  )
+
+(dhc-make-with-c++
+  ()
+  `(,(concat (rospath "roscpp") "/lib/libros.so"))
+  #{
+    #include "ros/ros.h"
+    #include "ros/exceptions.h"
+    #include "std_msgs/String.h"
+    #include <exception>
+    #include <string>
+
+    /// <summary> The ROS client for turtlebot. </summary>
+    class RosClient
+    {
+    public:
+      RosClient()
+      : m_nodeHandle(),
+        m_subChatter(),
+        m_chatterFrId(0),
+        m_lastMsgUnsafe()
+      {
+        char* defaultApp = "roslush";
+        int numArgs = 1;
+        ros::init(numArgs, &defaultApp, std::string("listener"));
+      }
+
+      void ChatterCallback(const std_msgs::String::ConstPtr& msg)
+      {
+        ROS_INFO("I heard: [%s]", msg->data.c_str());
+        m_lastMsgUnsafe = msg->data;
+        ++m_chatterFrId;
+      }
+
+      int StartStreamChatter()
+      {
+        try
+        {
+          m_subChatter = m_nodeHandle.subscribe("chatter", 1000,
+                                                &RosClient::ChatterCallback,
+                                                this);
+          return 0;
+        }
+        catch (ros::ConflictingSubscriptionException& e)
+        {
+          return 1;
+        }
+      }
+
+      /// <summary> Update chatter stream message. </summary>
+      /// <returns> Non-negative frame id on success </returns>
+      int UpdateChatter()
+      {
+        const int chatterFrIdInit = m_chatterFrId;
+        ros::spinOnce();
+        if (chatterFrIdInit < m_chatterFrId)
+        {
+          return m_chatterFrId;
+        }
+        else
+        {
+          return -1;
+        }
+      }
+
+    private:
+      ros::NodeHandle m_nodeHandle;
+      ros::Subscriber m_subChatter;
+      int m_chatterFrId;
+
+      /// <summary> Unsafe copy of the last message. </summary>
+      std::string m_lastMsgUnsafe;
+    };
+
+    /// <summary> The client. </summary>
+    static RosClient g_client;
+  #}
+  (turtlebot turtlebot start-stream-chatter -destructor)
+  )
+

@@ -1,0 +1,10 @@
+lush/src/*.o
+lush/bin/
+lush/config.log
+lush/config.status
+lush/src/Makefile
+lush/include/lushconf.h
+lush/include/lushmake.h
+lush/src/lush
+lush/sys/stdenv.dump
+lush/local/**/C/
