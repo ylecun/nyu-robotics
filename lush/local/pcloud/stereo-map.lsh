@@ -1,0 +1,1281 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; build a global map from stereo point-cloud data.
+;; Yann LeCun, October 2005
+
+(libload "libidx/idx-double")
+(libload "libidx/idx-float")
+(libload "libc/constants")
+(libload "map-util")
+(libload "stereo")
+(libload "stereo-sgm")
+(libload "groundplane")
+
+(defconstant "POINTN" 10)
+
+(de err-printf args 
+  (writing "$stderr" (printf (date-to-string (now) "%y:%m:%d-%T: ")) (apply printf args) (flush)))
+
+
+#? ** processing log-files into stereo maps.
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;	
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; below is code that is supposed to be made obsolete
+;; by the code above. The functions below do not attempt
+;; to correct GPS jumps.
+
+#? (make-stereo-map-dir-old <dir> <thres>)
+;; compute the stereo map for all the log files in directory <dir>.
+;; The maps are saved in files with the same name as the log
+;; file but with a .map suffix. <thres> is the threshold
+;; parameters that is passed to the point-cloud pruning algorithm.
+;; (see method simplify of stereo-map).
+;; All maps are aligned on a 10cm grid and are computed
+;; with 5cm resolution.
+(de make-stereo-map-dir-old (srcdir dstdir thres &optional (xs 0.05) (ys 0.05) (zs 0.05) display)
+  (let ((flist (sh (sprintf "find %s -follow -name '%s'" srcdir "left_*.log"))))
+    (each ((f flist))
+      (let ((map-file (concat dstdir "/" (concat (filename-chop-suffixes 
+						  (regex-subst "left_" "" (basename f))) ".map")))
+	    (sm (new stereo-map 1000000 xs ys zs))
+	    (fl f)
+	    (fr (regex-subst "left_" "right_" f)))
+	(if (or (not (filep fl)) (not (filep fr)))
+	    (writing "$stderr" (printf "one of the files doesn't exist [%s] [%s]\n" fl fr))
+	  (writing "$stderr" (printf "log file: %s\n" f))
+	  (if (and (filep map-file) (file-newer? map-file f))
+	      (writing "$stderr" (printf "map file already exists, skipping\n"))
+	    (each ((f (list fl fr)))
+	      (if (= -1 (==> sm add-log-file f 0 0 display))
+		  (writing "$stderr" (printf "incomplete log file, skipping\n\n"))
+		(==> sm recenter)
+		(writing "$stderr"
+		  (printf "%d cells, simplifying....\n" (idx-dim :sm:point-cloud 0))
+		  (setq nn (==> sm simplify thres))
+		  (printf "%d cells. done\n" nn))))
+	    (==> sm save map-file)
+	    (writing "$stderr" (printf "map saved in %s\n\n" map-file))))))))
+
+
+#? (make-stereo-map <flist> <thres> <chunk> <chunk-thres> &optional (xs 0.05) (ys 0.05) (zs 0.05) display)
+;; generate a groundplane-relative 3D map from the left and right logfiles, 
+;; using a corrected path if available. The corrected path is searched
+;; for in <correctedpath-dir>. This uses SGM stereo at 320x240,
+;; and RANSAC-based groundplane fitting in XYZ.
+;; make a stereo-map with all the log files in <flist>, using
+;; a chunking mechanism that simplifies the map every N frames.
+;; The maps are saved in files with the same name as the log
+;; file but with a .map suffix. <thres> is the threshold
+;; parameters that is passed to the point-cloud pruning algorithm.
+;; (see method simplify of stereo-map).
+;; All maps are aligned on a 10cm grid and are computed
+;; with 5cm resolution.
+;; This version generates a stereo-map every N frames and simplifies it.
+;; (setq smap (make-stereo-map '("/home/yann/net-scale/data/20050608/left_20050608_140001_0.log" "/home/yann/net-scale/data/20050608/right_20050608_140001_0.log") "/home/yann/net-scale/data/fixedpaths" 1.5 10 0.5)
+(de make-stereo-map (flist fixedpath-dir thres chunk chunk-thres &optional (xs 0.05) (ys 0.05) (zs 0.05) display)
+  (let* ((height 240) (width 320)
+	 (zz (new lagr-stereo-sgm)) 
+	 (planedist (float-matrix height width))
+	 (new-points 0) (total-points 0) 
+	 (gp (new groundplane-fitter-ransac))
+	 (n 0)
+	 (themap ())
+	 (max-distance 20.0))
+    (==> zz set-parameters 2.0 t t () 30 500 0 200 0 199)
+    (==> gp set-parameters 100 0.1 0.3 -1.0 -0.1 0.5)
+    (each ((logfile flist))
+    (if (<> 0 (==> zz open-log logfile))
+	(err-printf "*** could not open log file %s\n" logfile)
+      ;; process log file
+      (err-printf "=== starting log file %s\n" logfile)
+      (==> gp reset [f 0 0 1 -0.15])
+      (let ((fp (concat fixedpath-dir "/" (basename logfile) ".fxdp"))
+	    (fixed-path ())
+	    (sm ()) (frame 0))
+	;; finding fixed path
+	(if (not (filep fp))
+	    (err-printf "*** could not find fixed path %s\n" fp)
+	  (err-printf "fixed path found %s\n" fp)
+	  (setq fixed-path (reading fp (bread))))
+	;; loop over frames
+	(while (= @@LAGR_OK (==> zz getframe))
+	  ;; if end of a chunk, simplify map and merge into master map
+	  (when (= 0 (mod frame chunk))
+	    (when sm 
+	      (err-printf "-- simplifying total-points=%d\n" (idx-dim :sm:point-cloud 0))
+	      (==> sm simplify-hash2 chunk-thres)
+	      (err-printf "-- simplified  total-points=%d\n" (idx-dim :sm:point-cloud 0))
+	      (if (not themap) 
+		  (setq themap sm) 
+		(==> themap merge sm t))
+	      (err-printf "== merging into master map, total-points=%d\n" (idx-dim :themap:point-cloud 0)))
+	    (err-printf "++ creating new chunk map\n")
+	    (setq sm (new stereo-map (* (idx-dim :zz:images 2) (idx-dim :zz:images 3) chunk) xs ys zs)))
+	  (==> zz rectify)
+	  (==> zz stereo)
+	  (==> zz point-cloud max-distance)
+	  (==> sm add-local-map :zz:local-pointcloud
+	       (if fixed-path
+		   (select fixed-path 0 frame) 
+		 :zz:rawimage:vehicle-to-world-transform)
+	       t)
+	  (err-printf "frame=%d, added-points=%d, total-points=%d\n" 
+		      frame (idx-dim :zz:local-pointcloud 0) (idx-dim :sm:point-cloud 0))
+	  (incr frame))
+	(err-printf "-- simplifying total-points=%d\n" (idx-dim :sm:point-cloud 0))
+	(==> sm simplify-hash2 chunk-thres)
+	(err-printf "-- simplified  total-points=%d\n" (idx-dim :sm:point-cloud 0))
+	(if (not themap) (setq themap sm) (==> themap merge sm t))
+	(err-printf "== merging into master map, total-points=%d\n" (idx-dim :themap:point-cloud 0))
+	(err-printf "== done log file %s\n" logfile))))
+    (err-printf "== simplifying master map total-points=%d\n" (idx-dim :themap:point-cloud 0))
+    (==> themap simplify-hash2 thres)
+    (err-printf "== all done total-points=%d\n" (idx-dim :themap:point-cloud 0))
+    themap))
+				
+#? (make-stereo-map-dir <dir> <thres>)
+;; compute the stereo map for all the log files in directory <dir>.
+;; The maps are saved in files with the same name as the log
+;; file but with a .map suffix. <thres> is the threshold
+;; parameters that is passed to the point-cloud pruning algorithm.
+;; (see method simplify of stereo-map).
+;; All maps are aligned on a 10cm grid and are computed
+;; with 5cm resolution.
+;; This version generates a stereo-map every N frames and simplifies it.
+(de make-stereo-map-dir (srcdir dstdir fpdir thres &optional (xs 0.05) (ys 0.05) (zs 0.05) display)
+  (let ((flist (sh (sprintf "find %s -follow -name '%s'" srcdir "left_*.log"))))
+    (each ((f flist))
+      (let ((map-file (concat dstdir "/" (concat (filename-chop-suffixes 
+						  (regex-subst "left_" "" (basename f))) ".map")))
+	    (sm ())
+	    (fl f)
+	    (fr (regex-subst "left_" "right_" f)))
+	(if (or (not (filep fl)) (not (filep fr)))
+	    (err-printf "one of the files doesn't exist [%s] [%s]\n" fl fr)
+	  (err-printf "log file: %s\n" f)
+	  (if (and (filep map-file) (file-newer? map-file f))
+	      (writing "$stderr" (printf "map file already exists, skipping\n"))
+	    (setq sm (make-stereo-map (list fl fr) fpdir thres 10 0.5 xs ys zs display))
+	    (==> sm save map-file)
+	    (err-printf "map saved in %s\n\n" map-file)))))))
+	
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? ** merging maps
+;; Maps that overlap should be merged into a single map.
+;; The following class and function determine which maps
+;; should be merged by running a clustering algorithm
+;; on their bounding boxes. This is performed through the
+;; stereo-map-info class.
+
+#? (merge-all-maps <map-files> <dstbase>)
+;; cluster all the map files in list <map-files>,
+;; and save them as numbered files <dstbaseXXXX.map> 
+;; where XXXX is a number.
+;; example:
+;; {<code>
+;; (merge-all-maps (sh-find "/home/yann/net-scale/data/maps/" "*_20050608_*") "/home/yann/net-scale/data/bigmaps/20050608-")
+;; </code>}
+(de merge-all-maps (map-files dstbase &optional display)
+  (let* ((smis (load-stereo-map-infos map-files))
+	 (zz (cluster-stereo-map-infos smis))
+	 (i 0))
+    (when display
+      (cls)
+      (display-stereo-map-infos smis 10 20 500 500)
+      (display-stereo-map-infos zz 520 20 500 500))
+    (printf "found %d map clusters\n" (length zz))
+    (each ((smi zz))
+      (let* ((mfl :smi:map-file-list)
+	     (map (load-stereo-map (car mfl)))
+	     (outfile (sprintf "%s%04d.map" dstbase i)))
+	(printf "\n*** master map: %s, number of maps: %d\n" (car mfl) (length mfl))
+	(==> map subsample2)
+	(each ((f (cdr mfl)))
+	  (printf "  merging %s\n" f)
+	  (let ((m (load-stereo-map f)))
+	    (==> m subsample2)
+	    (==> map merge m)))
+	(printf "== saving in %s, %d points\n" outfile (idx-dim :map:point-cloud 0))
+	(==> map save outfile)
+	(incr i)))))
+
+
+#? (cluster-stereo-map-infos <smi-list>)
+;; take a list of stereo-map-infos and merge them
+;; (cluster them) into groups of overlapping maps.
+;; This has the side effect of modifying the
+;; stereo-map-infos themselves.
+;; The function returns a list of merged 
+;; stereo-map-infos. The slot map-file-list of each
+;; stereo-map-info contains the list of all stereo-map
+;; files to be  merged.
+;; The process consists in creating a stereo-map-info
+;; for each map file, and calling the clustering function
+;; <cluster-stereo-map-infos>, as shown below:
+;; {<code>
+;; (setq maps8 (sh-find "/home/yann/net-scale/data/maps/" "*_20050608_*"))
+;; (setq smis8 (load-stereo-map-infos maps8))
+;; (display-stereo-map-infos smis8 10 10 500 500)
+;; (setq zz (cluster-stereo-map-infos smis8))
+;; (display-stereo-map-infos zz 510 10 500 500)
+;; </code>}
+;; After this the variable <zz> contains a list of 
+;; <stereo-map-infos>, whose <map-file-list> contains
+;; the list of stereo-map files to be merged.
+(de cluster-stereo-map-infos (smi-list)
+  (let* ((r ())
+	 (l smi-list)
+	 (old-length (length l)))
+    (print "asd" old-length (length r))
+    (while (<> old-length (length r))
+      (print old-length (length r))
+      (setq old-length (length r))
+      (setq r ())
+      (while l
+	(setq r (cons (car l) r))
+	(setq l (merge-stereo-map-infos (car l) (cdr l))))
+      (setq l r))
+    r))
+
+
+#? (load-stereo-map-infos <map-file-list>)
+;; return a list of stereo-map-info for each
+;; stereo-map file in the list. discard those maps 
+;; for which the absolute pose is invalid.
+(de load-stereo-map-infos (map-file-list)
+  (let ((r ()))
+    (each ((f map-file-list)) 
+      (let ((smi (load-stereo-map-info f)))
+	(when (==> smi pose-valid?) (setq r (cons smi r)))))
+    r))
+
+#? (display-stereo-map-infos <smis> <x> <y> <sx> <sy>)
+;; Display the bounbding boxes of a list of stereo-map-infos
+;; in the current graphic window. The information is displayed
+;; at coordinates <x>,<y>, and scaled to fit into a rectangle
+;; of size <sx>,<sy> (while preserving the aspect ratio).
+(de display-stereo-map-infos (smis x y sx sy)
+  (let* ((xmin (inf (all ((smi smis)) :smi:x-min)))
+	 (ymin (inf (all ((smi smis)) :smi:y-min)))
+	 (xmax (sup (all ((smi smis)) (+ :smi:x-min :smi:x-size))))
+	 (ymax (sup (all ((smi smis)) (+ :smi:y-min :smi:y-size))))
+	 (kx (/ sx (- xmax xmin)))
+	 (ky (/ sy (- ymax ymin)))
+	 (k (min kx ky))
+	 (xx (+ x (* k (- xmax xmin))))
+	 (yy (+ y (* k (- ymax ymin)))))
+    (print kx ky k x y xx yy)
+    (printf "xmin=%g, xmax=%g, xsize=%g, ysize=%g\n" xmin ymin (- xmax xmin) (- ymax ymin))
+    (color-rgb 0 0 0)
+    (draw-rect x y (- xx x) (- yy y))
+    (gprintf x (+ yy 12) "(%g, %g)" xmin ymin)
+    (gprintf xx (- y 2) "(%g, %g)" (- xmax xmin) (- ymax ymin))
+    (each ((smi smis))
+      (color-rgb (rand 0 0.7) (rand 0 0.7) (rand 0 0.7))
+      ;; (print :smi:x-min :smi:y-min :smi:x-size :smi:y-size)
+      (draw-rect (+ x (* k (- :smi:x-min xmin)))
+		 (- yy (* k (+ (- :smi:y-min ymin) :smi:y-size)))
+		 (* k :smi:x-size)
+		 (* k :smi:y-size)))))
+
+#? * stereo-map-info low-level functions
+
+#? (load-stereo-map-info <f>)
+;; load the metadata from a stereo-map file 
+;; and return a <stereo-map-info> with it.
+(de load-stereo-map-info (f)
+  (let ((sm (load-stereo-map f)))
+    (new stereo-map-info 
+	 (list f)
+	 (+ :sm:x-min :sm:x-offset)
+	 (+ :sm:y-min :sm:y-offset)
+	 (+ :sm:z-min :sm:z-offset)
+	 :sm:x-size :sm:y-size :sm:z-size
+	 :sm:x-step :sm:y-step :sm:z-step
+	 (idx-dim :sm:point-cloud 0)
+	 (idx-dim :sm:waypoints 0))))
+
+#? (merge-stereo-map-infos <smi> <smilist>)
+;; merge all the stereo-map-infos in the list
+;; <smilist> with the map info <smi> if they overlap
+;; (if their bounding boxes are less than 1 meter apart).
+;; This returns a list the non-merged stereo-map-infos.
+(de merge-stereo-map-infos (smi smilist)
+  (let* ((r ()))
+    (each ((x smilist))
+      (when (not (==> smi merge x))
+	(setq r (cons x r))))
+    r))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * stereo-map-info
+;; a class that contains the metadata about a stereo-map
+;; without actually containing the map itself.
+;; This is used for deciding which maps to merge.
+(defclass stereo-map-info object
+  map-file-list				
+  (x-min 0) (y-min 0) (z-min 0)
+  (x-size 0) (y-size 0) (z-size 0)
+  (x-step 0) (y-step 0) (z-step 0)
+  n-point-cloud
+  n-waypoints)
+
+#? (new stereo-map-info <mfl> <xm> <ym> <zm> <xs> <ys> <zs> <xt> <yt> <zt> <npc> <nwp>)
+(defmethod stereo-map-info stereo-map-info (mfl xm ym zm xs ys zs xt yt zt npc nwp)
+  (setq map-file-list mfl)
+  (setq x-min xm y-min ym z-min zm)
+  (setq x-size xs y-size ys z-size zs)
+  (setq x-step xt y-step yt z-step zt)
+  (setq n-point-cloud npc)
+  (setq n-waypoints nwp) ())
+
+#? (==> <stereo-map-info> merge <smi>)
+;; merge <stereo-map-info> <smi> into the
+;; current <stereo-map-info> if their bounding
+;; boxes, enlarged by 1.0 meter, overlap.
+;; Return t if the merge occured, nil if it didn't. 
+(defmethod stereo-map-info merge (smi)
+  (when (collide-rect (list (- x-min 1.0) (- y-min 1.0) (+ x-size 2.0) (+ y-size 2.0))
+		      (list (- :smi:x-min 1.0) (- :smi:y-min 1.0) (+ :smi:x-size 2.0) (+ :smi:y-size 2.0)))
+    (setq map-file-list (append :smi:map-file-list map-file-list))
+    (incr n-point-cloud :smi:n-point-cloud)
+    (incr n-waypoints :smi:n-waypoints)
+    (let ((x-max (max (+ x-min x-size) (+ :smi:x-min :smi:x-size)))
+	  (y-max (max (+ y-min y-size) (+ :smi:y-min :smi:y-size)))
+	  (z-max (max (+ z-min z-size) (+ :smi:z-min :smi:z-size))))
+      (setq x-min (min x-min :smi:x-min))
+      (setq y-min (min y-min :smi:y-min))
+      (setq z-min (min z-min :smi:z-min))
+      (setq x-size (- x-max x-min))
+      (setq y-size (- y-max y-min))
+      (setq z-size (- z-max z-min))) t))
+
+#? (==> <stereo-map-info> pose-valid?)
+;; return t is it looks like the global pose was valid.
+;; (defmethod stereo-map-info pose-valid? () (if (> x-min 1000000) t ()))
+(defmethod stereo-map-info pose-valid? () t)
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? ** stereo-map creation and manipulation
+;; 
+
+#? * stereo-map
+;; a class that stores a 3D map of the world
+;; built from log files using the stereo system.
+;; slots are
+;; <x-offset>, <y-offset>, <z-offset>: world coordinates of the point 
+;;  relative to which the coordinates in the map are expressed.
+;; <x-min>, <y-min>, <z-min>: relative coordinates of lowest south-west corner.
+;; <x-size>, <y-size>, <z-size>: dimensions of the smallest rectangular 
+;; box that contains the map.
+;; <pointcloud>: point cloud. Each row contains x,y,z,r,g,b.
+;; <waypoints>: matrix of waypoint: each row is a 3x4 transformation
+;; matrix corresponding the robot location when its local map was added.
+;; <pc-pointers>: an Nx2 idx of integers that are the arguments
+;; of a "narrow" that would return all the point in the point cloud
+;; associated with the corresponding fram.
+(defclass stereo-map object
+  file-list
+  (x-offset 0) (y-offset 0) (z-offset 0)
+  (x-min 0) (y-min 0) (z-min 0)
+  (x-size 0) (y-size 0) (z-size 0)
+  (x-step 0) (y-step 0) (z-step 0)
+  point-cloud
+  waypoints
+  pc-pointers
+  )
+
+#? (new stereo-map <initial-size>)
+;; create a new stereo-map. The <initial-size> parameter
+;; should be larger than the total number of points
+;; in the point cloud (could be a few million for a typical
+;; log file). This size is not a hard limit, just a way
+;; to prevent excessive memory fragmentation.
+(defmethod stereo-map stereo-map (siz dx dy dz)
+  (setq file-list ())
+  (setq waypoints (double-matrix 1000 3 4))
+  (idx-d3resize waypoints 0 3 4)
+  (setq pc-pointers (int-matrix 1000 2))
+  (idx-i2resize pc-pointers 0 2)
+  (setq point-cloud (float-matrix siz @@POINTN))
+  (idx-f2resize point-cloud 0 @@POINTN)
+  (setq x-step dx) (setq y-step dy) (setq z-step dz))
+
+#? point-cloud
+;; A slot of <stereo-map> that which is an idx2 of doubles
+;; containing the full set of points in the point cloud.
+;; Each row is a vector of 10 elements that contains the description.
+;; of one point. A macro is defined for the index of each component of the
+;; the vector. The elements are as follows:
+;; {<ul>
+;;  {<li> <@@pc-x> (0): x coordinate}
+;;  {<li> <@@pc-y> (0): y coordinate}
+;;  {<li> <@@pc-z> (0): z coordinate}
+;;  {<li> <@@pc-r> (0): r average of red component}
+;;  {<li> <@@pc-g> (0): g average of green component}
+;;  {<li> <@@pc-b> (0): b average of blue component}
+;;  {<li> <@@pc-r2> (0): r2 average of square of red component}
+;;  {<li> <@@pc-g2> (0): g2 average of square of green component}
+;;  {<li> <@@pc-b2> (0): b2 average of square of blue component}
+;;  {<li> <@@pc-n> (0): weight (number of samples) in the point}
+;; }
+
+;; row elements in the point cloud
+(defconstant "pc-x" 0)			; x coordinate
+(defconstant "pc-y" 1)			; y coordinate
+(defconstant "pc-z" 2)			; z coordinate
+(defconstant "pc-r" 3)			; red component
+(defconstant "pc-g" 4)			; green component
+(defconstant "pc-b" 5)			; blue component
+(defconstant "pc-r2" 6)			; red squared
+(defconstant "pc-g2" 7)			; green squared
+(defconstant "pc-b2" 8)			; blue squared
+(defconstant "pc-n" 9)			; number of samples
+
+
+;; get a nice displayable point cloud. Z is preserved,
+;; X and Y are centered around zero.
+(defmethod stereo-map get-displayable-point-cloud (out)
+  (idx-f2resize out (idx-dim point-cloud 0) (idx-dim point-cloud 1))
+  (let ((cx (- (+ x-min (* 0.5 x-size))))
+	(cy (- (+ y-min (* 0.5 y-size)))))
+    (idx-bloop ((out out) (pc point-cloud))
+      (idx-copy pc out)
+      (out 0 (+ (out 0) cx))
+      (out 1 (+ (out 1) cy))
+      (out 2 (+ (out 2) z-offset)))
+    ()))
+
+#? (==> <stereo-map> to-vrml <vrml-filename>)
+;; write the whole map as a VRML model.
+;; points whose count is less than <thres> are eliminated
+(defmethod stereo-map to-vrml (f thres)
+  (let ((fp (open-write f)))
+    (header-vrml-write fp)
+    (point-cloud-vrml-write fp point-cloud thres)
+    (waypoints-vrml-write fp waypoints 1.0)
+    ))
+
+#? (==> <stereo-map> to-png <png-filename>)
+;; make a png image of the whole map in a top-down
+;; view.
+(defmethod stereo-map to-png (f thres)
+  (let ((fp (open-write f)))
+    (header-vrml-write fp)
+    (point-cloud-vrml-write fp point-cloud thres)
+    (waypoints-vrml-write fp waypoints 1.0)
+    ))
+
+#? (==> <stereo-map> vrml-view)
+;; view the map with VRML.
+;; The vrmlview executable must be in the shell path.
+(defmethod stereo-map vrml-view ()
+  (let ((vrmlfile (tmpname)))
+    (==> this to-vrml vrmlfile 0)
+    (sys (sprintf "vrmlview %s &" vrmlfile))))
+
+#? (==> <stereo-map> add-local-map-gp <pc> <transform>)
+;; add the point cloud <pc> of a local map to the <stereo-map>
+;; using a groundplane fitting.
+;; <transform> is the vehicle-to-world transform of the robot
+;; when the local map was built.
+(defmethod stereo-map add-local-map-gp (pc transform)
+  (let ((p (idx-dim point-cloud 0))
+	(pwp (idx-dim waypoints 0))
+	(n (idx-dim pc 0)))
+    ;; if map is empty, set offset to coordinate
+    ;; of first point
+    (when (= p 0)
+      (setq x-offset (transform 0 3))
+      (setq y-offset (transform 1 3))
+      (setq z-offset 0))
+    (idx-d3resize waypoints (1+ pwp) 3 4)
+    (idx-i2resize pc-pointers (1+ pwp) 2)
+    (pc-pointers pwp 0 n)
+    (pc-pointers pwp 1 p)
+    (let ((trans (select waypoints 0 pwp))
+	  (plane (float-matrix 4)) 
+	  (points (narrow pc 1 3 0)))
+      (fitplane_ransac points plane 100 0.01 0.3)
+      (plane-normalize plane)
+      (idx-copy transform trans)
+      (trans 0 3 (- (trans 0 3) x-offset))
+      (trans 1 3 (- (trans 1 3) y-offset))
+      ;; (trans 2 3 0.15)
+      (trans 2 3 1.0)
+
+      (idx-f2resize point-cloud (+ p n) @@POINTN)
+      (let ((tpc (narrow point-cloud 0 n p)))
+	;; copy rgb values
+	(idx-copy (narrow pc 1 3 3) (narrow tpc 1 3 3))
+	(idx-bloop ((in pc) (out tpc))
+	  ;; write transformed xyz coordinates
+	  (transform-point-float (narrow in 0 3 0) (narrow out 0 3 0) trans)
+	  ;; compute square of rgb values
+	  (out 6 (* (out 3) (out 3)))
+	  (out 7 (* (out 4) (out 4)))
+	  (out 8 (* (out 5) (out 5)))
+	  ;; set the counter to 1
+	  ;; (out 9 1.0)
+	  ;; set weight to the inverse distance to 
+	  ;; observation point. Saturate at 1.0 meter 
+	  (out 9 (/ 1 (max 1.0 (in 0))))
+	  ))))
+  (==> this update-bounding-box))
+
+
+#? (==> <stereo-map> add-local-map <pc> <transform> [<noz>])
+;; add the point cloud <pc> of a local map to the <stereo-map>.
+;; <transform> is the vehicle-to-world transform of the robot
+;; when the local map was built.
+;; The <noz> argument determines how the local map is transformed
+;; before being added to the stereo-map: nil: normal mode, with Z;
+;; non-nil: suppress Z coordinate (assumes robot is at Z=-0.15), 
+(defmethod stereo-map add-local-map (pc transform &optional noz)
+  (let ((p (idx-dim point-cloud 0))
+	(pwp (idx-dim waypoints 0))
+	(n (idx-dim pc 0)))
+    ;; if map is empty, set offset to coordinate
+    ;; of first point
+    (when (= p 0)
+      (setq x-offset (transform 0 3))
+      (setq y-offset (transform 1 3))
+      (setq z-offset (transform 2 3)))
+    (idx-d3resize waypoints (1+ pwp) 3 4)
+    (idx-i2resize pc-pointers (1+ pwp) 2)
+    (pc-pointers pwp 0 n)
+    (pc-pointers pwp 1 p)
+    (let ((trans (select waypoints 0 pwp)))
+      (idx-copy transform trans)
+      (trans 0 3 (- (trans 0 3) x-offset))
+      (trans 1 3 (- (trans 1 3) y-offset))
+      (if noz
+	  (trans 2 3 (- -0.15 z-offset))
+	(trans 2 3 (- (trans 2 3) z-offset)))
+      (idx-f2resize point-cloud (+ p n) @@POINTN)
+      (let ((tpc (narrow point-cloud 0 n p)))
+	;; copy rgb values
+	(idx-copy (narrow pc 1 3 3) (narrow tpc 1 3 3))
+	(idx-bloop ((in pc) (out tpc))
+	  ;; write transformed xyz coordinates
+	  (transform-point-float (narrow in 0 3 0) (narrow out 0 3 0) trans)
+	  ;; compute square of rgb values
+	  (out 6 (* (out 3) (out 3)))
+	  (out 7 (* (out 4) (out 4)))
+	  (out 8 (* (out 5) (out 5)))
+	  ;; set the counter to 1
+	  ;; (out 9 1.0)
+	  ;; set weight to the inverse distance to 
+	  ;; observation point. Saturate at 1.0 meter 
+	  (out 9 (/ 1 (max 1.0 (in 0))))
+	  ))))
+  (==> this update-bounding-box))
+
+
+#? (==> <stereo-map> update-bounding-box)
+;; compute the location of lowest south-west corner
+;; of the map and its size (in meters).
+;; Set the appropriate slots with the result. 
+(defmethod stereo-map update-bounding-box ()
+  (setq x-min ((idx-inf (select point-cloud 1 0))))
+  (setq x-size (- ((idx-sup (select point-cloud 1 0))) x-min))
+  (setq y-min ((idx-inf (select point-cloud 1 1))))
+  (setq y-size (- ((idx-sup (select point-cloud 1 1))) y-min))
+  (setq z-min ((idx-inf (select point-cloud 1 2))))
+  (setq z-size (- ((idx-sup (select point-cloud 1 2))) z-min))
+  (list x-min y-min z-min x-size y-size z-size))
+
+
+#? (==> <stereo-map> shift <x> <y> <z>)
+;; shift the map so that the point of coordinate
+;; (<x>,<y>,<z>) in the current map becomes the origin
+;; in the new map (translate the map by <-x>, <-y>, <-z>).
+;; the offset variables are updated accordingly,
+;; so that the original absolute coordinates
+;; are preserved.
+(defmethod stereo-map shift (x y z)
+  (let ((w (select point-cloud 1 0))) (idx-f1addc w (- x) w))
+  (let ((w (select point-cloud 1 1))) (idx-f1addc w (- y) w))
+  (let ((w (select point-cloud 1 2))) (idx-f1addc w (- z) w))
+  (let ((w (select (select waypoints 2 3) 1 0))) (idx-d1addc w (- x) w))
+  (let ((w (select (select waypoints 2 3) 1 1))) (idx-d1addc w (- y) w))
+  (let ((w (select (select waypoints 2 3) 1 2))) (idx-d1addc w (- z) w))
+  (setq x-min (- x-min x))
+  (setq y-min (- y-min y))
+  (setq z-min (- z-min z))
+  (setq x-offset (+ x-offset x))
+  (setq y-offset (+ y-offset y))
+  (setq z-offset (+ z-offset z))
+  ())
+  
+
+#? (==> <stereo-map> recenter)
+;; shift the map so that all the coordinates
+;; in the map are positive, i.e. coordinate (0,0,0)
+;; is at the bottom of the south-west
+;; corner of a rectangular box containing
+;; the entire map. The corner is put on a multiple
+;; of 10cm so that multiple simplified maps can be 
+;; aligned without aliasing.
+(defmethod stereo-map recenter ()
+  ;; just to make sure
+  (==> this update-bounding-box)
+  (==> this shift x-min y-min z-min)
+  ;; shift so that it's on a 10cm absolute grid
+  (let ((qx (- (* 0.1 (int (* 10 x-offset))) x-offset))
+	(qy (- (* 0.1 (int (* 10 y-offset))) y-offset))
+	(qz (- (* 0.1 (int (* 10 z-offset))) z-offset)))
+    (==> this shift qx qy qz)))
+
+#? (==> <stereo-map> subsample2)
+;; Subsample a previously simplified map 
+;; by a factor of two (increasing the grid
+;; step by a factor of two).
+(defmethod stereo-map subsample2 ()
+  (setq x-step (* 2 x-step))
+  (setq y-step (* 2 y-step))
+  (setq z-step (* 2 z-step))
+  (==> this simplify 0))
+	
+#? (==> <stereo-map> prune <thres>)
+;; Remove all grid cell with a count less than <thres>.
+(defmethod stereo-map prune (thres)
+  (setq point-cloud (stereo-map-pointcloud-prune point-cloud thres))
+  (==> this recenter))
+
+(defmethod stereo-map simplify (thres)
+  (let* ((x-max (+ x-min x-size)) (y-max (+ y-min y-size)) (z-max (+ z-min z-size) )
+	 (dx1 (/ 1 x-step)) (dy1 (/ 1 y-step)) (dz1 (/ 1 z-step))
+	 (n (* (1+ (* dx1 x-max)) (1+ (* dy1 y-max)) (1+ (* dz1 z-max)) 7 4)))
+    ;; if grid more than 200MB, use hash table
+    (if (> n 2.0e8)
+	(if (> (idx-dim point-cloud 0) 1000000)
+	    ;; if too many points, use slower more memory efficient htable method
+	    (==> this simplify-hash2 thres)
+	  ;; otherwise use regular htable method
+	  (==> this simplify-hash thres))
+      (==> this simplify-grid thres))))
+
+#? (==> <stereo-map> simplify-grid <dx> <dy> <dz> <thres>)
+;; simplify the map by building a 3D grid and
+;; merging all the points in the point-cloud that
+;; fall in a grid cell. All grid cell with a count less
+;; than <thres> are eliminated.
+(defmethod stereo-map simplify-grid (thres)
+  (==> this recenter)
+  ;; grid elements are r,g,b,r2,g2,b2,n:
+  ;; average r,g,b, average square thereof, so we can 
+  ;; later compute variances, and number of points
+  ;; in the cell.
+  (when (or (< x-min 0) (< y-min 0) (< z-min 0))
+    (error "map was not properly recentered (some coord negative)"))
+  (let* ((3dgrid (stereo-map-pointcloud-to-3dgrid 
+		  point-cloud (+ x-min x-size) (+ y-min y-size) (+ z-min z-size) 
+		  x-step y-step z-step)))
+    (setq point-cloud (stereo-map-3dgrid-to-pointcloud 3dgrid x-step y-step z-step)))
+  (==> this update-bounding-box)
+  (printf "1 grid -- %d\n" (idx-dim point-cloud 0))
+  (==> this prune thres)
+  (printf "2 grid -- %d\n" (idx-dim point-cloud 0))
+  (idx-dim point-cloud 0))
+
+#? (==> <stereo-map> simplify-hash <dx> <dy> <dz> <thres>)
+;; simplify the map by building a 3D grid and
+;; merging all the points in the point-cloud that
+;; fall in a grid cell. All grid cell with a count less
+;; than <thres> are eliminated.
+(defmethod stereo-map simplify-hash (thres)
+  (==> this recenter)
+  ;; grid elements are r,g,b,r2,g2,b2,n:
+  ;; average r,g,b, average square thereof, so we can 
+  ;; later compute variances, and number of points
+  ;; in the cell.
+  (when (or (< x-min 0) (< y-min 0) (< z-min 0))
+    (error "map was not properly recentered (some coord negative)"))
+  (let* ((hgrid (stereo-map-pointcloud-to-hgrid
+		  point-cloud x-step y-step z-step)))
+    (setq point-cloud (stereo-map-hgrid-to-pointcloud hgrid x-step y-step z-step)))
+  (==> this update-bounding-box)
+  (printf "1 hash -- %d\n" (idx-dim point-cloud 0))
+  (==> this prune thres)
+  (printf "2 hash -- %d\n" (idx-dim point-cloud 0))
+  (idx-dim point-cloud 0))
+
+
+#? (==> <stereo-map> simplify-hash2 <dx> <dy> <dz> <thres>)
+;; simplify the map by building a 3D grid and
+;; merging all the points in the point-cloud that
+;; fall in a grid cell. All grid cell with a count less
+;; than <thres> are eliminated.
+;; This is a bit more memory efficient than <simplify-hash>.
+(defmethod stereo-map simplify-hash2 (thres)
+  (==> this recenter)
+  ;; grid elements are r,g,b,r2,g2,b2,n:
+  ;; average r,g,b, average square thereof, so we can 
+  ;; later compute variances, and number of points
+  ;; in the cell.
+  (when (or (< x-min 0) (< y-min 0) (< z-min 0))
+    (error "map was not properly recentered (some coord negative)"))
+  (let (((hgrid m) (stereo-map-pointcloud-to-hgrid2
+		  point-cloud x-step y-step z-step)))
+    (setq point-cloud (stereo-map-hgrid2-to-pointcloud hgrid m x-step y-step z-step)))
+  (==> this update-bounding-box)
+  (printf "1 hash2 -- %d\n" (idx-dim point-cloud 0))
+  (==> this prune thres)
+  (printf "2 hash2 -- %d\n" (idx-dim point-cloud 0))
+  (idx-dim point-cloud 0))
+
+
+#? (==> <stereo-map> 2dmap)
+;; simplify the map by building a 3D grid and
+;; merging all the points in the point-cloud that
+;; fall in a grid cell. 
+(defmethod stereo-map 2dmap ()
+  (when (or (< x-min 0) (< y-min 0))
+    (error "map was not properly recentered (some coord negative)"))
+  (stereo-map-pointcloud-to-2dgrid 
+   point-cloud (+ x-min x-size) (+ y-min y-size) x-step y-step))
+
+#? (==> display-2dmap <winx> <winy> <zoom>)
+;; display a 2D bird's eye view of the map. 
+;; The map is displayed at location <winx> <winy> in the current
+;; window. <zoom> is an integer zoom factor.
+;; The 2D map is returned.
+(defmethod stereo-map display-2dmap (winx winy zoom)
+  (let* ((m (==> this 2dmap)))
+    (rgb-draw-matrix-flip winx winy (narrow m 2 3 0) zoom zoom)
+    (incr winx (+ 2 (* zoom (idx-dim m 1))))
+    (let ((elev (select m 2 7)))
+      (gray-draw-matrix-flip winx winy elev z-min (+ z-min z-size) zoom zoom))
+    m))
+
+#? (==> <stereo-map> add-log-file-triclops <logfile> <fstart> <nmax> <w> <h> <display-flag>)
+;; go through a log file, do stereo, produce the corresponding 
+;; point cloud, and add it to the current map. Only the point
+;; clouds for frames with a valid global pose are added.
+;; <logfile>: the log file.
+;; <fstart>: theindex of the first frame in the file to be grabbed.
+;; <nmax>: maximum number of frames to read from log file
+;; (set to 0 to read all the frames until the end)
+;; <w>,<h>: width and height of images on which to perform stereo
+;; (parameters passed to the <lagr-stereo> constructor).
+;; <display-flag>: set to non-nil to display the rectified frames
+;; and the disparity image. Return the number of frames read.
+(defmethod stereo-map add-log-file-triclops (logfile fstart nmax w h display-flag)
+  (let ((zz (new lagr-stereo w h)) (i 0) (new-points 0) (total-points 0) (s 0))
+    (if (<> 0  (==> zz open-log logfile))
+	-1
+      (while (and (< s fstart) (= @@LAGR_OK (==> zz getframe))) (incr s))
+      (while (and (= @@LAGR_OK (==> zz getframe)) (or (<= nmax 0) (< i nmax)))
+	;; (==> zz print-pose)
+	(when (==> zz global-pose-valid)
+	  (==> zz rectify)
+	  (==> zz stereo)
+	  (==> zz point-cloud)
+	  (when display-flag
+	    (when (not window) (new-window 0 0 1024 300 "stereo"))
+	    (==> zz display 0 0))
+	  (==> this add-local-map :zz:local-pointcloud :zz:rawimage:vehicle-to-world-transform t)
+	  (incr new-points (idx-dim :zz:local-pointcloud 0))
+	  (incr total-points (idx-dim :zz:local-pointcloud 0))
+	  ;; (printf "new-points=%d\n" new-points)
+	  ;; (when (> new-points 1000000) 
+	  ;;   (writing "$stderr" (printf "simplifying from %d ->" (idx-dim point-cloud 0)))
+	  ;;   (==> this simplify 0) (setq new-points 0)
+	  ;;   (writing "$stderr" (printf "%d\n" (idx-dim point-cloud 0)))
+	  ;;   )
+	  (incr i)))
+      (setq file-list (cons (list logfile s i) file-list))
+      (list s i (idx-dim point-cloud 0)))))
+
+#? (==> <stereo-map> add-log-file-sgm <logfile> <fstart> <nmax> <display-flag>)
+;; go through a log file, do stereo using SGM stereo, produce the corresponding 
+;; point cloud, and add it to the current map. Only the point
+;; clouds for frames with a valid global pose are added.
+;; <logfile>: the log file.
+;; <fstart>: theindex of the first frame in the file to be grabbed.
+;; <nmax>: maximum number of frames to read from log file
+;; (set to 0 to read all the frames until the end)
+;; <w>,<h>: width and height of images on which to perform stereo
+;; (parameters passed to the <lagr-stereo> constructor).
+;; <display-flag>: set to non-nil to display the rectified frames
+;; and the disparity image. Return the number of frames read.
+(defmethod stereo-map add-log-file-sgm (logfile fstart nmax display-flag 
+					    &optional (maxpoints 1000000))
+  (let ((zz (new lagr-stereo-sgm)) (i 0) (new-points 0) (total-points 0) (s 0) (n 0))
+    (==> zz set-parameters 5.0 t t () 30 500 0 200 0 199)
+    (if (<> 0  (==> zz open-log logfile))
+	(progn
+	  (writing "$stderr" (printf "*** could not open log file %s\n" logfile) (flush))
+	  -1)
+      (writing "$stderr" (printf "=== logfile %s\n" logfile) (flush))
+      (while (and (< s fstart) (= @@LAGR_OK (==> zz getframe))) (incr s) (incr n))
+      (while (and (= @@LAGR_OK (==> zz getframe)) (or (<= nmax 0) (< i nmax)))
+	;; (==> zz print-pose)
+	(when (==> zz global-pose-valid)
+	  (==> zz rectify)
+	  (==> zz stereo)
+	  (==> zz point-cloud)
+	  (when display-flag
+	    (when (not window) (new-window 0 0 1024 300 "stereo"))
+	    (==> zz display 0 0))
+	  (==> this add-local-map :zz:local-pointcloud :zz:rawimage:vehicle-to-world-transform t)
+	  (incr new-points (idx-dim :zz:local-pointcloud 0))
+	  (incr total-points (idx-dim :zz:local-pointcloud 0))
+	  (writing "$stderr" (printf "frame=%d, added-points=%d, total-points=%d\n" 
+				     n (idx-dim :zz:local-pointcloud 0) total-points) (flush))
+          ;; (when (> new-points maxpoints) 
+	  ;;   (writing "$stderr" (printf "simplifying from %d ->" (idx-dim point-cloud 0)) (flush))
+	  ;;   (==> this simplify 0) (setq new-points 0)
+	  ;;   (writing "$stderr" (printf "%d\n" (idx-dim point-cloud 0))) (flush))
+	  (incr n)
+	  (incr i)))
+      (setq file-list (cons (list logfile s i) file-list))
+      (writing "$stderr" (printf "--- done logfile %s, frames=%d, total-points=%d\n" logfile i (idx-dim point-cloud 0)) (flush))
+      (list s i (idx-dim point-cloud 0)))))
+
+
+#? (==> <stereo-map> add-log-file-gplane <logfile> <pathfile> <fstart> <nmax> <display-flag>)
+;; go through a log file, do stereo using SGM stereo, fit the ground plane,
+;; produce the point cloud with groundplane distance, and add it to the 
+;; current map with the corrected path. 
+;; <logfile>: the log file.
+;; <fstart>: theindex of the first frame in the file to be grabbed.
+;; <nmax>: maximum number of frames to read from log file
+;; (set to 0 to read all the frames until the end)
+;; <w>,<h>: width and height of images on which to perform stereo
+;; (parameters passed to the <lagr-stereo> constructor).
+;; <display-flag>: set to non-nil to display the rectified frames
+;; and the disparity image. Return the number of frames read.
+(defmethod stereo-map add-log-file-gplane (logfile pathfile fstart nmax display-flag 
+						   &optional (maxpoints 1000000))
+  (let* ((height 240) (width 320)
+	 (zz (new lagr-stereo-sgm)) 
+	 (rcds (float-matrix (* height width) 3))
+	 (planedist (float-matrix height width))
+	 (dpointcloud (float-matrix (* height width) 9))
+	 (gp (new groundplane-fitter-ransac))
+	 (fixed-path (when pathfile (reading pathfile (bread))))
+	 (new-points 0) 
+	 (total-points 0) 
+	 (i 0) (s 0) (n 0))
+    ;; (==> zz set-parameters 5.0 t t () 30 500 0 200 0 199)
+    (==> zz set-parameters 2.0 t t () 30 500 0 200 0 199)
+    (==> gp set-parameters 100 0.1 0.3 -1.0 -0.1 0.5)
+    (==> gp reset [f 0 0 1 -0.15])
+    (if (<> 0  (==> zz open-log logfile))
+	(progn
+	  (writing "$stderr" (printf "*** could not open log file %s\n" logfile) (flush))
+	  -1)
+      (writing "$stderr" (printf "=== logfile %s\n" logfile) (flush))
+      (while (and (< s fstart) (= @@LAGR_OK (==> zz getframe))) (incr s) (incr n))
+      (while (and (= @@LAGR_OK (==> zz getframe)) (or (<= nmax 0) (< i nmax)))
+	;; (==> zz print-pose)
+	(==> zz rectify)
+	(==> zz stereo)
+	(==> zz point-cloud 20.0)
+	(setq fit (==> gp fit :zz:local-pointcloud))
+	(when display-flag
+	  (when (not window) (new-window 0 0 1024 300 "stereo"))
+	  (==> zz display 0 0))
+	(plane-distance-xyz-project :zz:local-pointcloud :gp:plane)
+	(==> this add-local-map :zz:local-pointcloud
+	     (if fixed-path
+		 (select fixed-path 0 i) 
+	       :zz:rawimage:vehicle-to-world-transform)
+	     t)
+	(incr new-points (idx-dim :zz:local-pointcloud 0))
+	(incr total-points (idx-dim :zz:local-pointcloud 0))
+	(writing "$stderr" (printf "frame=%d, added-points=%d, total-points=%d\n" 
+				   n (idx-dim :zz:local-pointcloud 0) total-points) (flush))
+	;; (when (> new-points maxpoints) 
+	;;   (writing "$stderr" (printf "simplifying from %d ->" (idx-dim point-cloud 0)) (flush))
+	;;   (==> this simplify 0) (setq new-points 0)
+	;;   (writing "$stderr" (printf "%d\n" (idx-dim point-cloud 0))) (flush))
+	(incr n)
+	(incr i))
+      (setq file-list (cons (list logfile s i) file-list))
+      (writing "$stderr" (printf "--- done logfile %s, frames=%d, total-points=%d\n" logfile i (idx-dim point-cloud 0)) (flush))
+      (list s i (idx-dim point-cloud 0)))))
+
+
+#? (==> <stereo-map> merge <sm> [<force>])
+;; merge stereo-map <sm> into current map.
+;; checks if bounding boxes overlap before merging.
+;; if they do not overlap, do not merge and return -1.
+;; If the overlap, merge and return the number of points
+;; in the cloud. Set <force> to true to force merging
+;; even if there is no overlap.
+(defmethod stereo-map merge (sm &optional (force ()))
+  (if (and (not force) (not (stereo-map-overlap this sm)))
+      -1
+    (==> sm shift (- x-offset :sm:x-offset) (- y-offset :sm:y-offset) (- z-offset :sm:z-offset))
+    (let ((pco (idx-dim point-cloud 0))
+	  (wpo (idx-dim waypoints 0))
+	  (pcn (idx-dim :sm:point-cloud 0))
+	  (wpn (idx-dim :sm:waypoints 0)))
+      (idx-d3resize waypoints (+ wpo wpn) 3 4)
+      (idx-f2resize point-cloud (+ pco pcn) @@POINTN)
+      (idx-copy :sm:waypoints (narrow waypoints 0 wpn wpo))
+      (idx-copy :sm:point-cloud (narrow point-cloud 0 pcn pco))
+      (==> this simplify 0)
+      (setq file-list (append file-list :sm:file-list))
+      (+ pco pcn))))
+
+#? (==> <stereo-map> save <file>)
+;; save a stereo-map to a file. The map can be subsequently
+;; recovered with: <(setq themap (load-stereo-map file))>
+(defmethod stereo-map save (f) (writing f (bwrite this)))
+
+
+#? (load-stereo-map <file>)
+;; load a stereo-map from a file. Example:
+;; <(setq themap (load-stereo-map file))>
+(de load-stereo-map (f) (reading f (bread)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * stereo-map utilities
+
+#? (stereo-map-overlap <sm1> <sm2>)
+;; return t if stereo-maps <sm1> and <sm2> overlap
+;; (and therefore could be merged).
+(de stereo-map-overlap (sm1 sm2)
+o  (let* ((x0 (+ :sm1:x-offset :sm1:x-min))
+	 (x1 (+ x0 :sm1:x-size))
+	 (y0 (+ :sm1:y-offset :sm1:y-min))
+	 (y1 (+ y0 :sm1:y-size))
+	 (x2 (+ :sm2:x-offset :sm2:x-min))
+	 (x3 (+ x2 :sm2:x-size))
+	 (y2 (+ :sm2:y-offset :sm2:y-min))
+	 (y3 (+ y2 :sm2:y-size)))
+    (not (or (and (< x0 x2) (< x1 x2))
+	     (and (> x0 x3) (> x1 x3))
+	     (and (< y0 y2) (< y1 y2))
+	     (and (> y0 y3) (> y1 y3))))))
+
+#? (log-file-bounding-box <logfile>)
+;; read a log file and figure out the bounding box of the visible
+;; area.  This can be used to figure out if two log files contain
+;; overlaping trajectories. A bit slow.
+;; The bounding box is returned as a vector of doubles
+;; with 6 elements: xmin, ymin, zmin, xsize, ysize, zsize.
+(de log-file-bounding-box (logfile)
+  (let* ((rim (new lagr-rawimage))
+	 (x-min 0) (x-max 0) 
+	 (y-min 0) (y-max 0)
+	 (z-min 0) (z-max 0)
+	 (bbox (double-matrix 6)))
+    (==> rim log-open logfile)
+    (==> rim log-getframe)
+    (let ((trans :rim:vehicle-to-world-transform))
+      (setq x-max (setq x-min (trans 0 3)))
+      (setq y-max (setq y-min (trans 1 3)))
+      (setq z-max (setq z-min (trans 2 3))))
+    (while (= @@LAGR_OK (==> rim log-getframe))
+      (let ((trans :rim:vehicle-to-world-transform))
+	(setq x-min (min x-min (trans 0 3)))
+	(setq x-max (max x-max (trans 0 3)))
+	(setq y-min (min y-min (trans 1 3)))
+	(setq y-max (max y-max (trans 1 3)))
+	(setq z-min (min z-min (trans 2 3)))
+	(setq z-max (max z-max (trans 2 3)))))
+    (bbox 0 x-min) (bbox 3 (- x-max x-min))
+    (bbox 1 y-min) (bbox 4 (- y-max y-min))
+    (bbox 2 z-min) (bbox 5 (- z-max z-min))
+    bbox))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * low level stereo-map functions
+
+#? (stereo-map-pointcloud-to-3dgrid <pointcloud> <x-max> <y-max> <z-max> <dx> <dy> <dz>)
+;; make a 3D grid of voxels from a point-cloud.
+(de stereo-map-pointcloud-to-3dgrid (pointcloud x-max y-max z-max dx dy dz)
+  ((-idx2- (-float-)) pointcloud)
+  ((-double-) x-max y-max z-max dx dy dz)
+  (let* ((dx1 (/ 1 dx)) (dy1 (/ 1 dy)) (dz1 (/ 1 dz))
+	 (m (float-matrix (1+ (* dx1 x-max)) (1+ (* dy1 y-max)) (1+ (* dz1 z-max)) 7)))
+    ((-double-) dx1 dy1 dz1)
+    (idx-bloop ((p pointcloud))
+      (let* ((z (int (* dz1 (p 2))))
+	     (y (int (* dy1 (p 1))))
+	     (x (int (* dx1 (p 0))))
+	     (v (select (select (select m 2 z) 1 y) 0 x))
+	     (n (v 6))
+	     (q (p 9))
+	     (denom (/ (+ q n))))
+	((-int-) x y z)
+	((-float-) n q denom)
+	;; (printf "i=%d j=%d k=%d n=%d x=%g y=%g z=%g\n" x y z (1+ n) (p 0) (p 1) (p 2))
+	(v 6 (+ n q))
+	(v 0 (* denom (+ (* q (p 3)) (* n (v 0)))))
+	(v 1 (* denom (+ (* q (p 4)) (* n (v 1)))))
+	(v 2 (* denom (+ (* q (p 5)) (* n (v 2)))))
+	(v 3 (* denom (+ (* q (p 6)) (* n (v 3)))))
+	(v 4 (* denom (+ (* q (p 7)) (* n (v 4)))))
+	(v 5 (* denom (+ (* q (p 8)) (* n (v 5)))))))
+    m))
+
+#? (stereo-map-pointcloud-to-2dgrid (pointcloud x-max y-max dx dy)
+;; make a 2D map of "columns" from a point-cloud.
+;; Each element of the map contains data about all the points
+;; with the same x,y: average r,g,b, average square r,g,b, count of points
+;; in the column, minimum z, maximum z in the column. Remember that the
+;; z axis points down, so that the elevation is the min z, which
+;; is at index 7.
+(de stereo-map-pointcloud-to-2dgrid (pointcloud x-max y-max dx dy)
+  ((-idx2- (-float-)) pointcloud)
+  ((-double-) x-max y-max dx dy)
+  (let* ((dx1 (/ 1 dx)) (dy1 (/ 1 dy))
+	 (m (float-matrix (1+ (* dx1 x-max)) (1+ (* dy1 y-max)) 9)))
+    ((-double-) dx1 dy1)
+    (idx-f2fill (select m 2 7) 1e6)
+    (idx-f2fill (select m 2 8) -1e6)
+    (idx-bloop ((p pointcloud))
+      (let* ((y (int (* dy1 (p 1))))
+	     (x (int (* dx1 (p 0))))
+	     (v (select (select m 1 y) 0 x))
+	     (n (v 6))
+	     (q (p 9))
+	     (denom (/ (+ q n))))
+	((-int-) x y)
+	((-float-) n q denom)
+	;; (printf "i=%d j=%d k=%d n=%d x=%g y=%g z=%g\n" x y z (1+ n) (p 0) (p 1) (p 2))
+	(v 6 (+ n q))
+	(v 0 (* denom (+ (* q (p 3)) (* n (v 0)))))
+	(v 1 (* denom (+ (* q (p 4)) (* n (v 1)))))
+	(v 2 (* denom (+ (* q (p 5)) (* n (v 2)))))
+	(v 3 (* denom (+ (* q (p 6)) (* n (v 3)))))
+	(v 4 (* denom (+ (* q (p 7)) (* n (v 4)))))
+	(v 5 (* denom (+ (* q (p 8)) (* n (v 5)))))
+	(v 7 (min (v 7) (p 2)))
+	(v 8 (max (v 8) (p 2)))))
+    m))
+
+#? (stereo-map-3dgrid-to-pointcloud <m> <dx> <dy> <dz>)
+;; convert a 3D grid map to a pointcloud (which is more memory
+;; efficient but more difficult to process).
+(de stereo-map-3dgrid-to-pointcloud (m dx dy dz)
+  ((-idx4- (-float-)) m)
+  ((-double-) dx dy dz)
+  (let* ((n 0))
+    ((-int-) n)
+    (cidx-bloop ("i" "j" "k" ("m" m)) #{ if (m[6]>0.0) $n++; #})
+    (let* ((pointcloud (float-matrix n @@POINTN))
+	   (pc (idx-ptr pointcloud))
+	   (pcmod (idx-modulo pointcloud 0)))
+      ((-int-) pcmod)
+      (setq n 0)
+      (cidx-bloop ("i" "j" "k" ("m" m)) 
+          #{ if (m[6]!=0.0) {
+               int p = $pcmod*$n;
+               $pc[p]   = $dx * (i + 0.5);
+	       $pc[p+1] = $dy * (j + 0.5);
+               $pc[p+2] = $dz * (k + 0.5);
+	       $pc[p+3] = m[0]; $pc[p+4] = m[1]; $pc[p+5] = m[2];
+	       $pc[p+6] = m[3]; $pc[p+7] = m[4]; $pc[p+8] = m[5];
+	       $pc[p+9] = m[6];
+               $n++;
+	       }
+          #}) pointcloud)))
+
+#? (stereo-map-pointcloud-to-hgrid <pointcloud> <x-max> <y-max> <z-max> <dx> <dy> <dz>)
+;; make a 3D grid of voxels from a point-cloud. The 3D grid is represented
+;; as a hash table. 
+(de stereo-map-pointcloud-to-hgrid (pointcloud dx dy dz)
+  ;; ((-idx2- (-float-)) pointcloud)
+  ;; ((-double-) dx dy dz)
+  (let* ((dx1 (/ 1 dx)) (dy1 (/ 1 dy)) (dz1 (/ 1 dz))
+	 (m (htable (idx-dim pointcloud 0))))
+    (idx-bloop ((p pointcloud))
+      (let* ((z (int (* dz1 (p 2))))
+	     (y (int (* dy1 (p 1))))
+	     (x (int (* dx1 (p 0))))
+	     (w (m (list x y z)))
+	     (q (p 9))
+	     (n 0) (denom 0)
+	     (v (if (not w) (float-matrix 7) w)))
+	(setq n (v 6))
+	(setq denom (/ (+ q n)))
+	;; ((-int-) x y z)
+	;; ((-float-) n q denom)
+	;; (printf "i=%d j=%d k=%d n=%d x=%g y=%g z=%g\n" x y z (1+ n) (p 0) (p 1) (p 2))
+	(v 6 (+ n q))
+	(v 0 (* denom (+ (* q (p 3)) (* n (v 0)))))
+	(v 1 (* denom (+ (* q (p 4)) (* n (v 1)))))
+	(v 2 (* denom (+ (* q (p 5)) (* n (v 2)))))
+	(v 3 (* denom (+ (* q (p 6)) (* n (v 3)))))
+	(v 4 (* denom (+ (* q (p 7)) (* n (v 4)))))
+	(v 5 (* denom (+ (* q (p 8)) (* n (v 5)))))
+	(when (not w) (m (list x y z) v)))) 
+    m))
+
+#? (stereo-map-pointcloud-to-hgrid2 <pointcloud> <x-max> <y-max> <z-max> <dx> <dy> <dz>)
+;; make a 3D grid of voxels from a point-cloud. The 3D grid is represented
+;; as a hash table. This is meant to be more memory-efficient than 
+;; <stereo-map-pointcloud-to-hgrid>. Whereas <stereo-map-pointcloud-to-hgrid>
+;; stores a separate 7-dim vector in each htable entry, this function merely
+;; stores a index in a large Nx7 matrix.
+(de stereo-map-pointcloud-to-hgrid2 (pointcloud dx dy dz)
+  ;; ((-idx2- (-float-)) pointcloud)
+  ;; ((-double-) dx dy dz)
+  (let* ((dx1 (/ 1 dx)) (dy1 (/ 1 dy)) (dz1 (/ 1 dz))
+	 (ht (htable (idx-dim pointcloud 0)))
+	 (m (float-matrix (min (idx-dim pointcloud 0) 2000000) 7))
+	 (i 0))
+    (idx-bloop ((p pointcloud))
+      (let* ((z (int (* dz1 (p 2))))
+	     (y (int (* dy1 (p 1))))
+	     (x (int (* dx1 (p 0))))
+	     (w (ht (list x y z)))
+	     (q (p 9))
+	     (n 0) (denom 0)
+	     (v (if w (select m 0 w) (select m 0 i))))
+	(setq n (v 6))
+	(setq denom (/ (+ q n)))
+	;; ((-int-) x y z)
+	;; ((-float-) n q denom)
+	;; (printf "i=%d j=%d k=%d n=%d x=%g y=%g z=%g\n" x y z (1+ n) (p 0) (p 1) (p 2))
+	(v 6 (+ n q))
+	(v 0 (* denom (+ (* q (p 3)) (* n (v 0)))))
+	(v 1 (* denom (+ (* q (p 4)) (* n (v 1)))))
+	(v 2 (* denom (+ (* q (p 5)) (* n (v 2)))))
+	(v 3 (* denom (+ (* q (p 6)) (* n (v 3)))))
+	(v 4 (* denom (+ (* q (p 7)) (* n (v 4)))))
+	(v 5 (* denom (+ (* q (p 8)) (* n (v 5)))))
+	(when (not w) (ht (list x y z) i) (incr i))))
+    (list ht m)))
+
+
+#? (stereo-map-hgrid-to-pointcloud <m> <dx> <dy> <dz>)
+;; convert an htable 3D grid map to a pointcloud.
+(de stereo-map-hgrid-to-pointcloud (m dx dy dz)
+  (let* ((alist (htable-alist m))
+	 (n (htable-size m))
+	 (pointcloud (float-matrix n @@POINTN))
+	 (i 0))
+    (each (( ( (x y z) . v) alist)) 
+      (let ((pc (select pointcloud 0 i)))
+	(idx-copy v (narrow pc 0 7 3))
+	(pc 0 (* dx (+ x 0.5))) (pc 1 (* dy (+ y 0.5))) (pc 2 (* dz (+ z 0.5))))
+      (incr i))
+    pointcloud))
+  
+#? (stereo-map-hgrid2-to-pointcloud <ht> <m> <dx> <dy> <dz>)
+;; convert an htable 3D grid map to a pointcloud.
+;; <ht> is the htable, and <m> the matrix.
+(de stereo-map-hgrid2-to-pointcloud (ht m dx dy dz)
+  (let* ((alist (htable-alist ht))
+	 (n (htable-size ht))
+	 (pointcloud (float-matrix n @@POINTN))
+	 (i 0))
+    (each (( ( (x y z) . v) alist)) 
+      (let ((pc (select pointcloud 0 i)))
+	(idx-copy (select m 0 v) (narrow pc 0 7 3))
+	(pc 0 (* dx (+ x 0.5))) (pc 1 (* dy (+ y 0.5))) (pc 2 (* dz (+ z 0.5))))
+      (incr i))
+    pointcloud))
+  
+
+#? (stereo-map-pointcloud-prune <pointcloud> <thres>)
+;; prune a point-cloud by removing all points whose
+;; count is strictly less than <thres>. This is
+;; performed "in place", so the old pointcloud is destroyed.
+(de stereo-map-pointcloud-prune (pointcloud thres)
+  ((-idx2- (-float-)) pointcloud)
+  ((-float-) thres)
+  (let ((i 0) (n 0))
+    ((-int-) i n)
+    (idx-bloop ((r pointcloud))
+      (when (> (r 9) thres)
+	(when (<> i n) (idx-copy r (select pointcloud 0 n)))
+	(incr n))
+      (incr i))
+    (narrow pointcloud 0 n 0)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * numerical utilities
+
+#? (quantize-value-float <v> <s> <sinv>)
+;; quantize value <v> to step immediately below.
+;; <s> is the quantization step, and <sinv> its inverse.
+(de quantize-value-float (v s sinv)
+  ((-float-) v s sinv)
+  (to-float #{ $s*floorf($sinv*$v) #}))
+
+#? (quantize-value-double <v> <s> <sinv>)
+;; quantize value <v> to step immediately below.
+;; <s> is the quantization step, and <sinv> its inverse.
+(de quantize-value-double (v s sinv)
+  ((-double-) v s sinv)
+  (to-double #{ $s*floor($sinv*$v) #}))
+
+#? (elevation-to-rgb <in> <out> <z> <r> <g> <b>)
+;; turn an elevation map into an RGB (actually grayscale) image.
+;; <z> is the elevation that is mapped to white.
+;; elevations less than 0 are mapped to color <r,g,b>.
+(de elevation-to-rgb (in out z r g b)
+  ((-idx2- (-float-)) in)
+  ((-idx3- (-ubyte-)) out)
+  ((-float-) z)
+  ((-ubyte-) r g b)
+  (let ((k (/ 255 z)))
+    ((-float-) k)
+    (cidx-bloop ("i" "j" ("pin" in) ("pout" out))
+       #{ if (*pin <= 0.0) { 
+            pout[0]=$r; pout[1]=$g; pout[2]=$b; 
+          } else {
+            float v = $k*(*pin);
+            pout[0]=pout[1]=pout[2]=(v>255.0)?255:((v<0.0)?0:(unsigned char)(v));
+          } #})) ())
+
+		       
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make () 
+	  quantize-value-float
+	  quantize-value-double
+	  stereo-map-pointcloud-to-3dgrid
+	  stereo-map-pointcloud-to-2dgrid
+	  stereo-map-3dgrid-to-pointcloud
+	  stereo-map-pointcloud-prune
+	  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(de stereo-map-demo (thres f vrml n)
+  (when (not window) (new-window 0 0 1024 600 "stereo"))
+  (cls)
+  (defparameter sm (new stereo-map 1000000 0.05 0.05 0.05))
+  (defparameter dpointcloud (float-matrix 1000000 9))
+  (==> sm add-pcloud-file f () 0 n t)
+  (==> sm recenter)
+  (printf "%d cells, simplifying....\n" (idx-dim :sm:point-cloud 0))
+  (setq tim (time (setq nn (==> sm simplify-hash2 thres))))
+  (printf "%d cells. done in %g sec\n" nn tim)
+  (==> sm display-2dmap 0 200 2)
+  (==> sm get-displayable-point-cloud dpointcloud)
+  (pointcloud-ztocolor dpointcloud dpointcloud 0.5
+			   [f
+			   [-0.30 255 0 0]
+			   [-0.15 128 128 0]
+			   [+0.15 0 255 0]
+			   [+0.3  0 128 128]
+			   [+10.0 0 0 255] 
+			   ])
+  (when (not glwin)
+    (libload "stereo-map-display3d")
+    (defparameter glpc (new gl-point-cloud dpointcloud 0.4 3 0.2))
+    (defparameter glwin (new glut-demo-window glpc 1024 480 "point cloud")))
+  (==> glwin change dpointcloud)
+  (printf "saving to VRML...\n")
+  (==> sm to-vrml vrml 0)
+  (printf "done\n")
+  (sys (sprintf "vrmlview %s &" vrml)))
+
