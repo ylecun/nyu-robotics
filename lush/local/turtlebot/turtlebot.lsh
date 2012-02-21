@@ -24,14 +24,16 @@
 #? turtlebot
 ;; Control interface for the ROS turtlebot.
 (defclass turtlebot object
-;;  ((-float-) pos-x)
+  ((-gptr- "RosClient*") client)
   )
 
 (defmethod turtlebot turtlebot ()
+  (setq client (to-gptr #{ new RosClient() #}))
   ()
   )
 
 (defmethod turtlebot -destructor ()
+  #{ delete $client; #}
   ()
   )
 
@@ -50,7 +52,13 @@
 #? (turtlebot_start-stream-chatter <>)
 ;; Initialize the client.
 (defmethod turtlebot start-stream-chatter ()
-  (to-int #{ g_client.StartStreamChatter() #})
+  (to-int #{ $client->StartStreamChatter() #})
+  )
+
+#? (turtlebot_update-chatter <>)
+;; Initialize the client.
+(defmethod turtlebot update-chatter ()
+  (to-int #{ $client->UpdateChatter() #})
   )
 
 (dhc-make-with-c++
@@ -62,20 +70,34 @@
     #include "std_msgs/String.h"
     #include <exception>
     #include <string>
+    #include <iostream>
 
     /// <summary> The ROS client for turtlebot. </summary>
     class RosClient
     {
     public:
       RosClient()
-      : m_nodeHandle(),
+      : m_nodeHandle(NULL),
         m_subChatter(),
         m_chatterFrId(0),
         m_lastMsgUnsafe()
       {
-        char* defaultApp = "roslush";
-        int numArgs = 1;
-        ros::init(numArgs, &defaultApp, std::string("listener"));
+        // Init ROS.
+        {
+          ros::VP_string remappings;
+          ros::init(remappings, std::string("listener"),
+                    ros::init_options::AnonymousName);
+        }
+        std::cout << "RosClient() : initialized ros" << std::endl;
+        // Start the node.
+        m_nodeHandle = new ros::NodeHandle();
+        std::cout << "RosClient() : started node " << m_nodeHandle
+                  << std::endl;
+      }
+
+      ~RosClient()
+      {
+        delete m_nodeHandle;
       }
 
       void ChatterCallback(const std_msgs::String::ConstPtr& msg)
@@ -89,13 +111,20 @@
       {
         try
         {
-          m_subChatter = m_nodeHandle.subscribe("chatter", 1000,
-                                                &RosClient::ChatterCallback,
-                                                this);
+          std::cout << "StartStreamChatter() : try to subscribe to 'chatter'"
+                    << std::endl;
+          std::cout << "m_nodeHandle = " << m_nodeHandle << std::endl;
+          m_subChatter = m_nodeHandle->subscribe("chatter", 1000,
+                                                 &RosClient::ChatterCallback,
+                                                 this);
+          std::cout << "StartStreamChatter() : subscribed to 'chatter''"
+                    << std::endl;
           return 0;
         }
-        catch (ros::ConflictingSubscriptionException& e)
+        catch (std::exception& e)
         {
+          std::cerr << "StartStreamChatter() : error subscribing to 'chatter'"
+                    << std::endl;
           return 1;
         }
       }
@@ -117,17 +146,14 @@
       }
 
     private:
-      ros::NodeHandle m_nodeHandle;
+      ros::NodeHandle* m_nodeHandle;
       ros::Subscriber m_subChatter;
       int m_chatterFrId;
 
       /// <summary> Unsafe copy of the last message. </summary>
       std::string m_lastMsgUnsafe;
     };
-
-    /// <summary> The client. </summary>
-    static RosClient g_client;
   #}
-  (turtlebot turtlebot start-stream-chatter -destructor)
+  (turtlebot turtlebot start-stream-chatter update-chatter -destructor)
   )
 
