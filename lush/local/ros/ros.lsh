@@ -22,6 +22,8 @@
       "/opt/ros/electric/stacks/ros_comm/utilities/xmlrpcpp")
     ((= "geometry_msgs" package-name)
       "/opt/ros/electric/stacks/common_msgs/geometry_msgs")
+    ((= "sensor_msgs" package-name)
+      "/opt/ros/electric/stacks/common_msgs/sensor_msgs")
     ()
     )
   )

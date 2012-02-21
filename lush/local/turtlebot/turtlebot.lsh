@@ -20,15 +20,19 @@
 
 (setq c-include-path (cons (concat (rospath "std_msgs")
                            "/msg_gen/cpp/include") c-include-path))
-
+(setq c-include-path (cons (concat (rospath "sensor_msgs")
+                           "/msg_gen/cpp/include") c-include-path))
 #? turtlebot
 ;; Control interface for the ROS turtlebot.
 (defclass turtlebot object
   ((-gptr- "RosClient*") client)
+  ((-idx2- (-short-)) depth_image_raw)
   )
 
 (defmethod turtlebot turtlebot ()
   (setq client (to-gptr #{ new RosClient() #}))
+  ;; Not initialized until we start stream.
+  (setq depth_image_raw (short-matrix 480 640))
   ()
   )
 
@@ -37,28 +41,16 @@
   ()
   )
 
-;;#? (turtlebot_set-pos-x <x>)
-;;;; Set the turtlebot position x-coordinate.
-;;(defmethod turtlebot set-pos-x (x)
-;;  (setq pos-x x)
-;;  )
-;;
-;;#? (turtlebot_set-pos-x <x>)
-;;;; Get the turtlebot position y-coordinate.
-;;(defmethod turtlebot get-pos-x ()
-;;  pos-x
-;;  )
-
-#? (turtlebot_start-stream-chatter <>)
-;; Initialize the client.
-(defmethod turtlebot start-stream-chatter ()
-  (to-int #{ $client->StartStreamChatter() #})
+#? (==> <turtlebot> start-stream-depth-image-raw)
+;; Start the depth image stream.
+(defmethod turtlebot start-stream-depth-image-raw ()
+  (to-int #{ $client->StartStreamDepthImageRaw() #})
   )
 
-#? (turtlebot_update-chatter <>)
-;; Initialize the client.
-(defmethod turtlebot update-chatter ()
-  (to-int #{ $client->UpdateChatter() #})
+#? (==> <turtlebot> update-depth-image-raw)
+;; Update the depth image stream.
+(defmethod turtlebot update-depth-image-raw ()
+  (to-int #{ $client->UpdateDepthImageRaw(IDX_PTR($depth_image_raw, int_least16_t)) #})
   )
 
 (dhc-make-with-c++
@@ -67,20 +59,24 @@
   #{
     #include "ros/ros.h"
     #include "ros/exceptions.h"
-    #include "std_msgs/String.h"
+    #include "sensor_msgs/Image.h"
     #include <exception>
     #include <string>
     #include <iostream>
+    #include <stdint.h>
+    #include <cstring>
 
     /// <summary> The ROS client for turtlebot. </summary>
     class RosClient
     {
     public:
+      enum { DepthImageBpp = 2, };
+
       RosClient()
       : m_nodeHandle(NULL),
-        m_subChatter(),
-        m_chatterFrId(0),
-        m_lastMsgUnsafe()
+        m_depImgRaw(),
+        m_depImgRawFrId(0),
+        m_depImgRawMostRecent()
       {
         // Init ROS.
         {
@@ -100,44 +96,52 @@
         delete m_nodeHandle;
       }
 
-      void ChatterCallback(const std_msgs::String::ConstPtr& msg)
+      /// <summary> Callback for subscription to depth/image_raw. </summary>
+      void DepthImageRawCallback(const sensor_msgs::Image::ConstPtr& msg)
       {
-        ROS_INFO("I heard: [%s]", msg->data.c_str());
-        m_lastMsgUnsafe = msg->data;
-        ++m_chatterFrId;
+        m_depImgRawMostRecent = msg;
+        ++m_depImgRawFrId;
       }
 
-      int StartStreamChatter()
+      int StartStreamDepthImageRaw()
       {
         try
         {
-          std::cout << "StartStreamChatter() : try to subscribe to 'chatter'"
+          std::cout << "StartStreamDepthImageRaw() : try to subscribe to "
+                       "'camera/depth/image_raw'"
                     << std::endl;
-          std::cout << "m_nodeHandle = " << m_nodeHandle << std::endl;
-          m_subChatter = m_nodeHandle->subscribe("chatter", 1000,
-                                                 &RosClient::ChatterCallback,
+          m_depImgRaw = m_nodeHandle->subscribe("camera/depth/image_raw", 1,
+                                                 &RosClient::DepthImageRawCallback,
                                                  this);
-          std::cout << "StartStreamChatter() : subscribed to 'chatter''"
+          std::cout << "StartStreamDepthImageRaw() : subscribed to "
+                       "'camera/depth/image_raw'"
                     << std::endl;
           return 0;
         }
         catch (std::exception& e)
         {
-          std::cerr << "StartStreamChatter() : error subscribing to 'chatter'"
+          std::cerr << "StartStreamDepthImageRaw() : error subscribing to "
+                       "'camera/depth/image_raw'"
                     << std::endl;
           return 1;
         }
       }
 
-      /// <summary> Update chatter stream message. </summary>
+      /// <summary> Update depth image raw stream message. </summary>
       /// <returns> Non-negative frame id on success </returns>
-      int UpdateChatter()
+      int UpdateDepthImageRaw(int_least16_t* data)
       {
-        const int chatterFrIdInit = m_chatterFrId;
+        const int32_t depImgRawFrId = m_depImgRawFrId;
         ros::spinOnce();
-        if (chatterFrIdInit < m_chatterFrId)
+        if (depImgRawFrId < m_depImgRawFrId)
         {
-          return m_chatterFrId;
+          // Copy data then release image.
+          //const int32_t dataSize = m_depImgRawMostRecent->width *
+          //                         m_depImgRawMostRecent->height * DepthImageBpp;
+          const int32_t dataSize = static_cast<int32_t>(m_depImgRawMostRecent->data.size());
+          memcpy(data, &m_depImgRawMostRecent->data[0], dataSize);
+          m_depImgRawMostRecent.reset();
+          return m_depImgRawFrId;
         }
         else
         {
@@ -147,13 +151,29 @@
 
     private:
       ros::NodeHandle* m_nodeHandle;
-      ros::Subscriber m_subChatter;
-      int m_chatterFrId;
+      ros::Subscriber m_depImgRaw;
 
-      /// <summary> Unsafe copy of the last message. </summary>
-      std::string m_lastMsgUnsafe;
+      int32_t m_depImgRawFrId;
+      sensor_msgs::ImageConstPtr m_depImgRawMostRecent;
     };
   #}
-  (turtlebot turtlebot start-stream-chatter update-chatter -destructor)
+  (turtlebot
+     turtlebot
+     start-stream-depth-image-raw
+     update-depth-image-raw
+     -destructor)
+  )
+
+#? turtlebot-test
+;; Create a graphics window and show the raw depth data.
+(de turtlebot-test ()
+  (let* ((tb (new turtlebot)))
+    (==> tb start-stream-depth-image-raw)
+    (new-window)
+    (while t
+      (==> tb update-depth-image-raw)
+      (gray-draw-matrix 10 10 :tb:depth_image_raw 0 2048 1 1)
+      )
+    )
   )
 
