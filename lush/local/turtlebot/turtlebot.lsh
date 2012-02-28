@@ -17,22 +17,31 @@
                            "/include") c-include-path))
 (setq c-include-path (cons (concat (rospath "xmlrpcpp")
                            "/src") c-include-path))
-
+;; Include paths for messages.
 (setq c-include-path (cons (concat (rospath "std_msgs")
                            "/msg_gen/cpp/include") c-include-path))
 (setq c-include-path (cons (concat (rospath "sensor_msgs")
                            "/msg_gen/cpp/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "geometry_msgs")
+                           "/msg_gen/cpp/include") c-include-path))
+(setq c-include-path (cons (concat (rospath "nav_msgs")
+                           "/msg_gen/cpp/include") c-include-path))
+
 #? turtlebot
 ;; Control interface for the ROS turtlebot.
 (defclass turtlebot object
   ((-gptr- "RosClient*") client)
   ((-idx2- (-short-)) depth_image_raw)
+  ((-idx1- (-double-)) odom_linear)
+  ((-idx1- (-double-)) odom_angular)
   )
 
 (defmethod turtlebot turtlebot ()
   (setq client (to-gptr #{ new RosClient() #}))
   ;; Not initialized until we start stream.
   (setq depth_image_raw (short-matrix 480 640))
+  (setq odom_linear [d 0 0 0])
+  (setq odom_angular [d 0 0 0])
   ()
   )
 
@@ -44,13 +53,31 @@
 #? (==> <turtlebot> start-stream-depth-image-raw)
 ;; Start the depth image stream.
 (defmethod turtlebot start-stream-depth-image-raw ()
-  (to-int #{ $client->StartStreamDepthImageRaw() #})
+  (to-int #{ $client->StartStream<CameraDepthRawStream>() #})
   )
 
-#? (==> <turtlebot> update-depth-image-raw)
+#? (==> <turtlebot> update-stream-depth-image-raw)
 ;; Update the depth image stream.
-(defmethod turtlebot update-depth-image-raw ()
-  (to-int #{ $client->UpdateDepthImageRaw(IDX_PTR($depth_image_raw, int_least16_t)) #})
+(defmethod turtlebot update-stream-depth-image-raw ()
+  (to-int #{
+     $client->UpdateStream<CameraDepthRawStream>(IDX_PTR($depth_image_raw, int_least16_t))
+     #})
+  )
+
+#? (==> <turtlebot> start-stream-odom)
+;; Start the odometry stream.
+(defmethod turtlebot start-stream-odom ()
+  (to-int #{ $client->StartStream<RosLushOdomStream>() #})
+  )
+
+#? (==> <turtlebot> update-stream-odom)
+;; Update the odometry stream.
+(defmethod turtlebot update-stream-odom ()
+  (to-int #{
+     $client->UpdateStream<RosLushOdomStream>(
+       &RosLushOdomStream::lush_convert_type(IDX_PTR($odom_linear,  double),
+                                             IDX_PTR($odom_angular, double)))
+     #})
   )
 
 (dhc-make-with-c++
@@ -60,23 +87,151 @@
     #include "ros/ros.h"
     #include "ros/exceptions.h"
     #include "sensor_msgs/Image.h"
+    #include "geometry_msgs/Twist.h"
+    #include "nav_msgs/Odometry.h"
+    #include "sensor_msgs/Imu.h"
     #include <exception>
     #include <string>
     #include <iostream>
     #include <stdint.h>
     #include <cstring>
 
-    /// <summary> The ROS client for turtlebot. </summary>
-    class RosClient
+    // Forward declaration.
+    template <typename RosLushStreamTraits> class RosTopicSubscription;
+
+    /// <summary> OpenNI camera depth raw stream. </summary>
+    struct RosLushCameraDepthRaw
+    {
+      typedef sensor_msgs::Image msg_type;
+      typedef int_least16_t lush_convert_type;
+      inline static const char* TopicStr()
+      {
+        return "camera/depth/image_raw";
+      }
+      inline static void CopyMsgData(const msg_type::ConstPtr& msg,
+                                     lush_convert_type* data)
+      {
+        const int32_t dataSize = static_cast<int32_t>(msg->data.size());
+        memcpy(data, &msg->data[0], dataSize);
+      }
+    };
+    typedef RosTopicSubscription<RosLushCameraDepthRaw> CameraDepthRawStream;
+
+    /// <summary> Turtlebot odometry stream. </summary>
+    struct RosLushOdom
+    {
+      struct TwistData
+      {
+        TwistData(double* linear_, double* angular_)
+          : linear(linear_),
+            angular(angular_)
+        {}
+        double* linear;
+        double* angular;
+      };
+      typedef geometry_msgs::Twist msg_type;
+      typedef TwistData lush_convert_type;
+      inline static const char* TopicStr()
+      {
+        return "odom";
+      }
+      inline static void CopyMsgData(const msg_type::ConstPtr& msg,
+                                     lush_convert_type* data)
+      {
+        data->linear[0] = msg->linear.x;
+        data->linear[1] = msg->linear.y;
+        data->linear[2] = msg->linear.z;
+        data->angular[0] = msg->angular.x;
+        data->angular[1] = msg->angular.y;
+        data->angular[2] = msg->angular.z;
+      }
+    };
+    typedef RosTopicSubscription<RosLushOdom> RosLushOdomStream;
+
+    /// <summary> Generic ROS stream logic. </summary>
+    template <typename RosLushStreamTraits>
+    class RosTopicSubscription
     {
     public:
-      enum { DepthImageBpp = 2, };
+      typedef typename RosLushStreamTraits::msg_type msg_type;
+      typedef typename RosLushStreamTraits::lush_convert_type lush_convert_type;
 
+      RosTopicSubscription()
+      : m_subscriber(),
+        m_frId(-1),
+        m_mostRecent()
+      {}
+
+      virtual ~RosTopicSubscription()
+      {}
+
+      /// <summary> Callback for subscription. </summary>
+      void Callback(const typename msg_type::ConstPtr& msg)
+      {
+        m_mostRecent = msg;
+        ++m_frId;
+      }
+
+      /// <summary> Start stream. </summary>
+      /// <returns> Zero on success, otherwise failure.. </returns>
+      int StartStream(ros::NodeHandle* nodeHandle)
+      {
+        assert(nodeHandle);
+        try
+        {
+          std::cout << "StartStream() : try to subscribe to "
+                       "'" << RosLushStreamTraits::TopicStr() << "'"
+                    << std::endl;
+          m_subscriber = nodeHandle->subscribe(RosLushStreamTraits::TopicStr(), 1,
+                                               &RosTopicSubscription::Callback,
+                                               this);
+          std::cout << "StartStreamDepthImageRaw() : subscribed to "
+                       "'" << RosLushStreamTraits::TopicStr() << "'"
+                    << std::endl;
+          return 0;
+        }
+        catch (std::exception& e)
+        {
+          std::cerr << "StartStreamDepthImageRaw() : error subscribing to "
+                       "'" << RosLushStreamTraits::TopicStr() << "'"
+                    << std::endl;
+          return 1;
+        }
+      }
+
+      /// <summary> Update stream. </summary>
+      /// <returns> Non-negative frame id on success. </returns>
+      int Update(lush_convert_type* data)
+      {
+        const int32_t frId = m_frId;
+        ros::spinOnce();
+        if (frId < m_frId)
+        {
+          // Copy data then release message.
+          RosLushStreamTraits::CopyMsgData(m_mostRecent, data);
+          m_mostRecent.reset();
+          return m_frId;
+        }
+        else
+        {
+          return -1;
+        }
+      }
+
+    private:
+      ros::Subscriber m_subscriber;
+      int32_t m_frId;
+      typename msg_type::ConstPtr m_mostRecent;
+    };
+
+    /// <summary> The ROS client for turtlebot. </summary>
+    class RosClient
+      : public CameraDepthRawStream,
+        public RosLushOdomStream
+    {
+    public:
       RosClient()
-      : m_nodeHandle(NULL),
-        m_depImgRaw(),
-        m_depImgRawFrId(0),
-        m_depImgRawMostRecent()
+      : m_nodeHandle(NULL)
       {
         // Init ROS.
         {
@@ -96,72 +251,41 @@
         delete m_nodeHandle;
       }
 
-      /// <summary> Callback for subscription to depth/image_raw. </summary>
-      void DepthImageRawCallback(const sensor_msgs::Image::ConstPtr& msg)
+      /// <summary> Start one of the ROS streams. </summary>
+      template <typename StreamType>
+      inline int StartStream()
       {
-        m_depImgRawMostRecent = msg;
-        ++m_depImgRawFrId;
+        StreamType* stream = static_cast<StreamType*>(this);
+        return stream->StartStream(m_nodeHandle);
       }
 
-      int StartStreamDepthImageRaw()
+      /// <summary> Update one of the ROS streams. </summary>
+      template <typename StreamType>
+      inline int UpdateStream(typename StreamType::lush_convert_type* data)
       {
-        try
-        {
-          std::cout << "StartStreamDepthImageRaw() : try to subscribe to "
-                       "'camera/depth/image_raw'"
-                    << std::endl;
-          m_depImgRaw = m_nodeHandle->subscribe("camera/depth/image_raw", 1,
-                                                 &RosClient::DepthImageRawCallback,
-                                                 this);
-          std::cout << "StartStreamDepthImageRaw() : subscribed to "
-                       "'camera/depth/image_raw'"
-                    << std::endl;
-          return 0;
-        }
-        catch (std::exception& e)
-        {
-          std::cerr << "StartStreamDepthImageRaw() : error subscribing to "
-                       "'camera/depth/image_raw'"
-                    << std::endl;
-          return 1;
-        }
-      }
-
-      /// <summary> Update depth image raw stream message. </summary>
-      /// <returns> Non-negative frame id on success </returns>
-      int UpdateDepthImageRaw(int_least16_t* data)
-      {
-        const int32_t depImgRawFrId = m_depImgRawFrId;
-        ros::spinOnce();
-        if (depImgRawFrId < m_depImgRawFrId)
-        {
-          // Copy data then release image.
-          //const int32_t dataSize = m_depImgRawMostRecent->width *
-          //                         m_depImgRawMostRecent->height * DepthImageBpp;
-          const int32_t dataSize = static_cast<int32_t>(m_depImgRawMostRecent->data.size());
-          memcpy(data, &m_depImgRawMostRecent->data[0], dataSize);
-          m_depImgRawMostRecent.reset();
-          return m_depImgRawFrId;
-        }
-        else
-        {
-          return -1;
-        }
+        StreamType* stream = static_cast<StreamType*>(this);
+        return stream->Update(data);
       }
 
     private:
-      ros::NodeHandle* m_nodeHandle;
-      ros::Subscriber m_depImgRaw;
+      // Disable copy and assign.
+      RosClient(const RosClient&);
+      RosClient& operator=(const RosClient&);
 
-      int32_t m_depImgRawFrId;
-      sensor_msgs::ImageConstPtr m_depImgRawMostRecent;
+      /// <summary> The ROS node maintains the connections. </summary>
+      ros::NodeHandle* m_nodeHandle;
     };
   #}
   (turtlebot
      turtlebot
+     -destructor
+     ;; Depth image raw.
      start-stream-depth-image-raw
-     update-depth-image-raw
-     -destructor)
+     update-stream-depth-image-raw
+     ;; Odom.
+     start-stream-odom
+     update-stream-odom
+     )
   )
 
 #? turtlebot-test
@@ -171,8 +295,8 @@
     (==> tb start-stream-depth-image-raw)
     (new-window)
     (while t
-      (==> tb update-depth-image-raw)
-      (gray-draw-matrix 10 10 :tb:depth_image_raw 0 2048 1 1)
+      (==> tb update-stream-depth-image-raw)
+      (gray-draw-matrix 0 0 :tb:depth_image_raw 0 1023 1 1)
       )
     )
   )
