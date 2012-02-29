@@ -9,7 +9,7 @@
 ;; kinect sensor and the center of the robot along the forward axis.
 ;; element (2,3) is the negative height of the kinect sensor above the
 ;; ground.
-(defparameter turtlebot-c2v [f [0 0 1 -0.5] [1 0 0 0] [0 1 0 -0.25]])
+(defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.29]])
 
 (defparameter identity [f [1 0 0 0] [0 1 0 0] [0 0 1 0]])
 
@@ -104,7 +104,6 @@
 ;; make a point cloud out of an RGB and a depth image.
 ;; <image> is the RGB image from the sensor.
 ;; <depth> is the depth image.
-;; <c2v> is the camera to vehicle transformation matrix (3x4 idx2 of float).
 ;; <cutoff> is the depth above which points are ignored.
 ;; The output is written in <rgb>, <rcd>, which are
 ;; all Nx3 idx of floats, where N is the number of valid disparity pixels. 
