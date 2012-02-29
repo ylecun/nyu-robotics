@@ -31,20 +31,33 @@
 ;; Control interface for the ROS turtlebot.
 (defclass turtlebot object
   ((-gptr- "RosClient*") client)
+  ;; Depth image.
   ((-idx2- (-short-)) depth_image_raw)
-  ((-idx1- (-double-)) odom_linear)
-  ((-idx1- (-double-)) odom_angular)
+  ;; Odometry.
+  ((-idx1- (-double-)) odom-pose-position)
+  ((-idx1- (-double-)) odom-pose-orientation)
+  ((-idx1- (-double-)) odom-pose-covariance)
+  ((-idx1- (-double-)) odom-twist-linear)
+  ((-idx1- (-double-)) odom-twist-angular)
+  ((-idx1- (-double-)) odom-twist-covariance)
   )
 
+#? (new turtlebot)
 (defmethod turtlebot turtlebot ()
   (setq client (to-gptr #{ new RosClient() #}))
-  ;; Not initialized until we start stream.
+  ;; Depth image.
   (setq depth_image_raw (short-matrix 480 640))
-  (setq odom_linear [d 0 0 0])
-  (setq odom_angular [d 0 0 0])
+  ;; Odometry.
+  (setq odom-pose-position (double-matrix 3))
+  (setq odom-pose-orientation (double-matrix 4))
+  (setq odom-pose-covariance (double-matrix 36))
+  (setq odom-twist-linear (double-matrix 3))
+  (setq odom-twist-angular (double-matrix 3))
+  (setq odom-twist-covariance (double-matrix 36))
   ()
   )
 
+#? (delete <turtlebot>)
 (defmethod turtlebot -destructor ()
   #{ delete $client; #}
   ()
@@ -75,8 +88,12 @@
 (defmethod turtlebot update-stream-odom ()
   (to-int #{
      $client->UpdateStream<RosLushOdomStream>(
-       &RosLushOdomStream::lush_convert_type(IDX_PTR($odom_linear,  double),
-                                             IDX_PTR($odom_angular, double)))
+       &RosLushOdomStream::lush_convert_type(IDX_PTR($odom_pose_position, double),
+                                             IDX_PTR($odom_pose_orientation, double),
+                                             IDX_PTR($odom_pose_covariance, double),
+                                             IDX_PTR($odom_twist_linear, double),
+                                             IDX_PTR($odom_twist_angular, double),
+                                             IDX_PTR($odom_twist_covariance, double)))
      #})
   )
 
@@ -117,20 +134,33 @@
     };
     typedef RosTopicSubscription<RosLushCameraDepthRaw> CameraDepthRawStream;
 
+    template <typename Vector3>
+    inline void CopyVector3(const Vector3& src, double* dst)
+    {
+      dst[0] = src.x; dst[1] = src.y; dst[2] = src.z;
+    }
+
+    template <typename Vector4>
+    inline void CopyVector4(const Vector4& src, double* dst)
+    {
+      dst[0] = src.x; dst[1] = src.y; dst[2] = src.z; dst[3] = src.w;
+    }
+
     /// <summary> Turtlebot odometry stream. </summary>
     struct RosLushOdom
     {
-      struct TwistData
+      struct OdomData
       {
-        TwistData(double* linear_, double* angular_)
-          : linear(linear_),
-            angular(angular_)
+        OdomData(double* p_pos, double* p_orien, double* p_cov,
+                 double* t_lin, double* t_ang, double* t_cov)
+          : pose_position(p_pos), pose_orientation(p_orien), pose_covariance(p_cov),
+            twist_linear(t_lin), twist_angular(t_ang), twist_covariance(t_cov)
         {}
-        double* linear;
-        double* angular;
+        double *pose_position, *pose_orientation, *pose_covariance;
+        double *twist_linear, *twist_angular, *twist_covariance;
       };
-      typedef geometry_msgs::Twist msg_type;
-      typedef TwistData lush_convert_type;
+      typedef nav_msgs::Odometry msg_type;
+      typedef OdomData lush_convert_type;
       inline static const char* TopicStr()
       {
         return "odom";
@@ -138,12 +168,14 @@
       inline static void CopyMsgData(const msg_type::ConstPtr& msg,
                                      lush_convert_type* data)
       {
-        data->linear[0] = msg->linear.x;
-        data->linear[1] = msg->linear.y;
-        data->linear[2] = msg->linear.z;
-        data->angular[0] = msg->angular.x;
-        data->angular[1] = msg->angular.y;
-        data->angular[2] = msg->angular.z;
+        CopyVector3(msg->twist.twist.linear, data->twist_linear);
+        CopyVector3(msg->twist.twist.angular, data->twist_angular);
+        memcpy(data->twist_covariance, &msg->twist.covariance[0],
+               msg->twist.covariance.size() * sizeof(msg->twist.covariance[0]));
+        CopyVector3(msg->pose.pose.position, data->pose_position);
+        CopyVector4(msg->pose.pose.orientation, data->pose_orientation);
+        memcpy(data->pose_covariance, &msg->pose.covariance[0],
+               msg->pose.covariance.size() * sizeof(msg->pose.covariance[0]));
       }
     };
     typedef RosTopicSubscription<RosLushOdom> RosLushOdomStream;

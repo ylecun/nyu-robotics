@@ -8,5 +8,8 @@ lush/include/lushmake.h
 lush/src/lush
 lush/sys/stdenv.dump
 lush/local/**/C/
+lush/packages/**/C/
+lush/packages/**/**/C/
+lush/lsh/**/C/
 *.swp
 lush/Makefile
