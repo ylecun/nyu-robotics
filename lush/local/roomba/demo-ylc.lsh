@@ -1,0 +1,140 @@
+(libload "roomba")
+(libload "../freenect/freenect")
+(libload "../pcloud/pcloud")
+
+;; demo of map generated from Kinect.
+;; By default, this will use a free standing kinect.
+;; and will assume that the kinect is 29cm above ground.
+;; If you use a kinect mounted on a turtlebot, pass
+;; a non-nil argument. 
+(de demo-ylc (&optional roombap)
+  (when (not window) (new-window 0 0 1280 1000 "asd"))
+  (let* ((r (when roombap (new roomba "/dev/ttyUSB0")))
+	 (q ())
+	 (d (float-matrix 480 640))
+	 (rgb (float-matrix 307200 3))
+	 (rcd (float-matrix 307200 3))
+	 (xyz (float-matrix 307200 3))
+	 (stop ())
+	 (robot-height 0.45)
+	 (cellsize 0.1)
+	 (costmap-xsize 100)
+	 (costmap-ysize 100)
+	 (mp (float-matrix costmap-xsize costmap-ysize 3))
+	 (costmap (float-matrix costmap-xsize costmap-ysize 2)))
+    ;; turn kinect on.
+    (when r (==> r kinect-on))
+    ;; create freenect object
+    (setq q (new freenect 0))
+    ;; infinite loop
+    (while (not stop)
+      (==> q update)
+      (let ((image (==> q get-rgb))
+	    (rawd (==> q get-depth)))
+	(rgb-draw-matrix 0 0 image)
+	(pcloud-image2rcdrgb image rawd 2000 rcd rgb)
+	(pcloud-rcd2xyz rcd xyz kinect-d2m kinect-rcd2xyz turtlebot-c2v)
+	(idx-clear mp)
+	(pcloud-xyz2map xyz rgb mp 95 50 cellsize cellsize robot-height)
+	(map2cost mp costmap 0.2)
+	(process-depth rawd d)
+	(rgb-draw-matrix 640 0 d)
+	(display-costmap 0 460 costmap 4)
+	(process-pending-events)
+	))
+    ()))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? (pcloud-xyz2map <xyz> <rgb> <map> <cx> <cy> <sx> <sy> <robot-height>)
+;; computes a grid map of point-cloud features <map> from 
+;; a point cloud <xyz> and <rgb>. <map> must be an <nrow>x<ncol>x<3>
+;; idx3 of floats. For each cell, element 0 is the number of points
+;; in the cell, element 1 is the sum of the heights of the points
+;; (z coordinate), and element 2 is the sum of the squares of the 
+;; heights of the points. The robot is at the bottom of the map,
+;; with the X axis going up, and the Y axis going right.
+;; <cx> <cy>: are the row and column indices of the robot
+;; in the map. <sx> and  <sy> are the size of the grid cell.
+;; <robot-height> is the height of the robot. Any point
+;; above that height is ignored.
+(de pcloud-xyz2map (xyz rgb mp cx cy sx sy robot-height)
+  ((-float-) cx cy sx sy robot-height)
+  ((-idx2- (-float-)) xyz rgb)
+  ((-idx3- (-float-)) mp)
+  (let ((xmax (idx-dim mp 0))
+	(ymax (idx-dim mp 1))
+	(sx1 (/ -1.0 sx))
+	(sy1 (/ 1.0 sy)))
+    (idx-bloop ((xyz xyz) (rgb rgb))
+      ;; compute row and col
+      (let* ((z (xyz 2))
+	     (xx (+ cx (* (xyz 0) sx1)))
+	     (yy (+ cy (* (xyz 1) sy1)))
+	     (ixx (int xx))
+	     (iyy (int yy)))
+	(when (and (>= xx 0) (< xx xmax) (>= yy 0) (< yy ymax) (< z robot-height))
+	  ;; number of points
+	  (mp ixx iyy 0 (+ (mp ixx iyy 0) 1))
+	  ;; mean height
+	  (mp ixx iyy 1 (+ (mp ixx iyy 1) z))
+	  ;; mean square height
+	  (mp ixx iyy 2 (+ (mp ixx iyy 2) (* z z))))))
+    ()))
+
+#? (map2cost <map> <costmap> <default-cost>)
+;; Computed a cost/confidenc map <costmap> from
+;; a pointcloud feature map <map>. This assumes
+;; that <map> is an <sx>x<sy>x<3> array of floats,
+;; where each cell contains the number of points
+;; that falss in the cell, the sum of the heights 
+;; of the points, and the sum of the squares of the
+;; heights. <costmap> is a <sx>x<sy>x<2> array of
+;; floats containing for each cell a cost and a confidence
+;; (which is 0 for empty cells, and 1 for cells in
+;; which the cost is known with confidence).
+;; Empty cells are given the cost <default-cost>.
+(de map2cost (mp im default-cost)
+  ((-idx3- (-float-)) mp)
+  ((-idx3- (-float-)) im)
+  ((-float-) default-cost)
+  (let ((v 0))
+    (idx-bloop ((mp mp) (im im))
+      (idx-bloop ((mp mp) (im im))
+	(if (= 0.0 (mp 0))
+	    (progn (im 0 default-cost)  (im 1 0))
+	  (im 0 (/ (- (mp 1)) (mp 0)))
+	  (im 1 (min 1.0 (* (mp 0) 100))))))) ())
+
+#? (costmap2image <costmap> <images> <max-cost>)
+;; transforms a costmap into a displayable RGB image.
+;; cells with zero confisence are mapped to blue,
+;; Cells with non-zero confidence are mapped to black
+;; for cost 0 and white for cost <max-cost>.
+ (de costmap2image (mp im vv)
+  ((-idx3- (-float-)) mp)
+  ((-idx3- (-ubyte-)) im)
+  ((-float-) vv)
+  (let ((v 0))
+    (idx-bloop ((mp mp) (im im))
+      (idx-bloop ((mp mp) (im im))
+	(if (= 0.0 (mp 1))
+	    (progn (im 0 0) (im 1 0) (im 2 200))
+	  (setq v (min 255 (max 0 (* (/ 255 vv) (mp 0)))))
+	  (im 0 v) (im 1 v) (im 2 v))))))
+
+#? (display-costmap <x> <y> <costmap> <zoom>)
+;; display a costmap at position <x><y> with <zoom>
+;; factor in the current window.
+(de display-costmap (x y mp zoom)
+  (let ((im (ubyte-matrix (idx-dim mp 0) (idx-dim mp 1) 3)))
+    (costmap2image mp im 0.2)
+    (rgb-draw-matrix x y im zoom zoom)))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; compile some of the functions.
+(dhc-make 
+ ()
+ map2cost
+ costmap2image
+ )
