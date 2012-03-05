@@ -1,0 +1,139 @@
+(libload "turtlebot/turtlebot")
+;;(libload "roomba/roomba")
+
+;; z = 25cm
+;; x = 1cm
+;; y = 7cm
+
+(defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.25]])
+
+;; TODO(reissb) -- 20120228 -- Make this into an object.
+(defparameter feature-map-dim 481)
+(defparameter feature-map (float-matrix feature-map-dim feature-map-dim 3))
+(defparameter cost-map (float-matrix feature-map-dim feature-map-dim))
+(defparameter feature-map-scale [f 0.01 0.01])
+(defparameter feature-map-center-cell [i 0 0])
+(feature-map-center-cell 0 (- feature-map-dim 1))
+(feature-map-center-cell 1 (/ feature-map-dim 2))
+
+#?  (xyz2feature-map <xyz> <feature-map> <center-cell> <scale>)
+;; Create a feature map for each map cell.
+;;   Features:
+;;   [0] - Number of points.
+;;   [1] - Sum of heights.
+;;   [2] - Sum of squared heights.
+(de xyz2feature-map (xyz feature-map center-cell scale)
+  (let (
+      (cell-offset [i 0 0])
+      (cell-dst [i 0 0])
+      (map-dim [i 0 0]))
+    (map-dim 0 (idx-dim feature-map 0))
+    (map-dim 1 (idx-dim feature-map 1))
+    (idx-clear feature-map)
+    (idx-bloop ((xyz xyz))
+      ;; X changes row (in striaght ahead of robot).
+      (cell-offset 0 (* -1 (/ (xyz 0) (scale 0))))
+      ;; Y changes column (right side of robot).
+      (cell-offset 1 (/ (xyz 1) (scale 1)))
+      ;; Add the offset.
+      (idx-copy center-cell cell-dst)
+      (idx-add cell-dst cell-offset cell-dst)
+      ;; Check cell in bounds.
+      (if (and (and (<= 0 (cell-dst 0)) (<= 0 (cell-dst 1)))
+               (and (< (cell-dst 0) (map-dim 0)) (< (cell-dst 1) (map-dim 1))))
+        (let ((h (* -1 (xyz 2))))
+          ;; Increment count.
+          (feature-map (cell-dst 0) (cell-dst 1) 0
+            (+ (feature-map (cell-dst 0) (cell-dst 1) 0) 1))
+          ;; Sum height.
+          (feature-map (cell-dst 0) (cell-dst 1) 1
+            (+ (feature-map (cell-dst 0) (cell-dst 1) 1) h))
+          ;; Sum square height.
+          (feature-map (cell-dst 0) (cell-dst 1) 2
+            (+ (feature-map (cell-dst 0) (cell-dst 1) 2) (* h h)))
+          )
+        ()
+        )
+      )
+    feature-map
+    )
+  )
+
+(defparameter inf-cost 9999)
+(de feature-map2cost-map (feature-map cost-map)
+  (idx-bloop ((cell-r feature-map) (cost-r cost-map))
+    (idx-bloop ((cell cell-r) (cost cost-r))
+      ;; Store average height.
+      (if (not (= 0 (cell 0)))
+        (cost (div (cell 1) (cell 0)))
+        (cost inf-cost)
+        )
+      )
+    )
+  ()
+  )
+
+(defparameter cost-map-rgb (short-matrix feature-map-dim feature-map-dim 3))
+(defparameter cost-map-max 10)
+(de depth-cost-frame (tb)
+  (==> tb update-stream-camera-depth-image-raw)
+  (==> tb update-stream-camera-depth-points)
+  (xyz2feature-map :tb:camera-depth-points feature-map feature-map-center-cell feature-map-scale)
+  (feature-map2cost-map feature-map cost-map)
+  (idx-bloop ((cost-r cost-map) (cost-rgb-r cost-map-rgb))
+    (idx-bloop ((cost cost-r) (cost-rgb cost-rgb-r))
+      (if (not (= inf-cost (cost)))
+        ;; Shade of gray based on cost in range [-cost-map-max, cost-map-max].
+        (let* ((color (min 255 (max 0 (* (/ (+ cost-map-max (cost))) (* cost-map-max 2)) 255))))
+          (idx-bloop ((rgb cost-rgb))
+            (rgb color)
+            )
+            ()
+          )
+        ;; Else blue.
+        (cost-rgb 0 0) (cost-rgb 1 0) (cost-rgb 2 255)
+        )
+      )
+    )
+  (cls)
+  (gray-draw-matrix 0 0 :tb:camera-depth-image-raw 0 1023 1 1)
+  ;;(gray-draw-matrix (idx-dim :tb:camera-depth-image-raw 1) 0 cost-map 0 10.0 1 1)
+  (rgb-draw-matrix (idx-dim :tb:camera-depth-image-raw 1) 0 cost-map-rgb)
+  )
+
+;;(de drive-simple ()
+;;  (when (not window) (new-window 0 0 1280 1000 "asd"))
+;;  (let (
+;;    (r (new roomba "/dev/ttyUSB0"))
+;;    (q ())
+;;    (d (float-matrix 480 640))
+;;    (rgb (float-matrix 307200 3))
+;;    (rcd (float-matrix 307200 3))
+;;    (cxyz (float-matrix 307200 3))
+;;    (vxyz (float-matrix 307200 3))
+;;    (stop ())
+;;    (dx 100) (dy 500) (cx 0.1) (cy -0.1) (zoom 300) (cv 0) (cd 0))
+;;    (==> r kinect-on)
+;;    (==> r forward-at 100)
+;;    (sleep 1)
+;;    (==> r read-sensors 0) 
+;;    (pretty :r:sensors)
+;;    (==> r stop)
+;;    (setq q (new freenect 0))
+;;    (==> q update)
+;;    (while (not stop)
+;;      (==> q update)
+;;      (let ((image (==> q get-rgb))
+;;        (rawd (==> q get-depth)))
+;;        (rgb-draw-matrix 0 0 image)
+;;        (pcloud-image2rcdrgb image rawd 2000 rcd rgb)
+;;        (pcloud-rcd2xyz rcd cxyz kinect-d2m kinect-rcd2xyz turtlebot-c2v)
+;;        (process-depth rawd d)
+;;        (rgb-draw-matrix 0 480 d)
+;;        ;; (rgb-draw-matrix 644 4 (pcloud-display dx dy cxyz rgb zoom cx cy))
+;;        )
+;;      )
+;;    ()
+;;    )
+;;  )
+
