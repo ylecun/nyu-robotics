@@ -128,7 +128,7 @@
 #? (==> <turtlebot> start-pub-cmd-vel)
 ;; Start the camera cmd_vel publisher.
 (defmethod turtlebot start-pub-cmd-vel ()
-  (to-int #{ $client->StartSubscriber<CameraDepthPointsSubscriber>() #})
+  (to-int #{ $client->StartPublisher<CmdVelPublisher>() #})
   )
 
 #? (==> <turtlebot> publish_cmd_vel <linear> <angular>)
@@ -411,8 +411,9 @@
         assert(nodeHandle);
         try
         {
-          m_publisher = nodeHandle->advertise(RosLushPublisherTraits::TopicStr(),
-                                              RosLushPublisherTraits::queue_size);
+          const std::string topicStr(RosLushPublisherTraits::TopicStr());
+          const uint32_t queueSize = RosLushPublisherTraits::queue_size;
+          m_publisher = nodeHandle->advertise<msg_type>(topicStr, queueSize);
           std::cout << "StartPublisher() : publishing to "
                        "'" << RosLushPublisherTraits::TopicStr() << "'"
                     << std::endl;
