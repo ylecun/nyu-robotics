@@ -242,14 +242,13 @@
         const int dataLength = msg->height * msg->row_step;
         const uint8_t* dataSrc = &msg->data[0];
         const uint8_t* const dataSrcEnd = dataSrc + dataLength;
-        for (;
-             dataSrc < dataSrcEnd;
-             dataSrc += pointStep, dataDst += Float32XYZPointSize)
+        for (; dataSrc < dataSrcEnd; dataSrc += pointStep)
         {
           // Ignore bad points.
           if (!std::isnan(*reinterpret_cast<const float*>(dataSrc)))
           {
             memcpy(dataDst, dataSrc, Float32XYZPointSize);
+            dataDst += Float32XYZPointSize;
             ++numPoints;
           }
         }
