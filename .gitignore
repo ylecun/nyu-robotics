@@ -13,3 +13,4 @@ lush/packages/**/**/C/
 lush/lsh/**/C/
 *.swp
 lush/Makefile
+demos/C/
