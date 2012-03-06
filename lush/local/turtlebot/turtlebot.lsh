@@ -67,62 +67,82 @@
   ()
   )
 
-#? (==> <turtlebot> start-stream-camera-depth-image-raw)
-;; Start the camera depth image_raw stream.
-(defmethod turtlebot start-stream-camera-depth-image-raw ()
-  (to-int #{ $client->StartStream<CameraDepthImageRawStream>() #})
+#? (==> <turtlebot> start-sub-camera-depth-image-raw)
+;; Start the camera depth image_raw subscriber.
+(defmethod turtlebot start-sub-camera-depth-image-raw ()
+  (to-int #{ $client->StartSubscriber<CameraDepthImageRawSubscriber>() #})
   )
 
-#? (==> <turtlebot> update-stream-camera-depth-image-raw)
-;; Update the camera depth image_raw stream.
-(defmethod turtlebot update-stream-camera-depth-image-raw ()
+#? (==> <turtlebot> update-camera-depth-image-raw)
+;; Update the camera depth image_raw subscriber.
+(defmethod turtlebot update-camera-depth-image-raw ()
   (to-int #{
-     $client->UpdateStream<CameraDepthImageRawStream>(IDX_PTR($camera_depth_image_raw,
-                                                              int_least16_t))
+     $client->Update<CameraDepthImageRawSubscriber>(IDX_PTR($camera_depth_image_raw,
+                                                            int_least16_t))
      #})
   )
 
-#? (==> <turtlebot> start-stream-odom)
-;; Start the odometry stream.
-(defmethod turtlebot start-stream-odom ()
-  (to-int #{ $client->StartStream<OdomStream>() #})
+#? (==> <turtlebot> start-sub-odom)
+;; Start the odometry subscriber.
+(defmethod turtlebot start-sub-odom ()
+  (to-int #{ $client->StartSubscriber<OdomSubscriber>() #})
   )
 
-#? (==> <turtlebot> update-stream-odom)
-;; Update the odometry stream.
-(defmethod turtlebot update-stream-odom ()
+#? (==> <turtlebot> update-odom)
+;; Update the odometry subscriber.
+(defmethod turtlebot update-odom ()
   (to-int #{
-     $client->UpdateStream<OdomStream>(
-       &OdomStream::lush_convert_type(IDX_PTR($odom_pose_position, double),
-                                      IDX_PTR($odom_pose_orientation, double),
-                                      IDX_PTR($odom_pose_covariance, double),
-                                      IDX_PTR($odom_twist_linear, double),
-                                      IDX_PTR($odom_twist_angular, double),
-                                      IDX_PTR($odom_twist_covariance, double)))
+     $client->Update<OdomSubscriber>(
+       &OdomSubscriber::lush_convert_type(IDX_PTR($odom_pose_position, double),
+                                          IDX_PTR($odom_pose_orientation, double),
+                                          IDX_PTR($odom_pose_covariance, double),
+                                          IDX_PTR($odom_twist_linear, double),
+                                          IDX_PTR($odom_twist_angular, double),
+                                          IDX_PTR($odom_twist_covariance, double)))
      #})
   )
 
-#? (==> <turtlebot> start-stream-camera-depth-points)
-;; Start the camera depth points stream.
-(defmethod turtlebot start-stream-camera-depth-points ()
-  (to-int #{ $client->StartStream<CameraDepthPointsStream>() #})
+#? (==> <turtlebot> start-sub-camera-depth-points)
+;; Start the camera depth points subscriber.
+(defmethod turtlebot start-sub-camera-depth-points ()
+  (to-int #{ $client->StartSubscriber<CameraDepthPointsSubscriber>() #})
   )
 
-#? (==> <turtlebot> update-stream-camera-depth-points)
-;; Update the camera depth points stream.
-(defmethod turtlebot update-stream-camera-depth-points ()
+#? (==> <turtlebot> update-camera-depth-points)
+;; Update the camera depth points subscriber.
+(defmethod turtlebot update-camera-depth-points ()
   (let ((num-points [i 0]) (res 0))
     ;; Fetch point data then resize the structure for this frame.
     (setq res
        (to-int #{
-         $client->UpdateStream<CameraDepthPointsStream>(
-           &CameraDepthPointsStream::lush_convert_type(IDX_PTR($camera_depth_points, float),
-                                                       IDX_PTR($num_points, int)))
+         $client->Update<CameraDepthPointsSubscriber>(
+           &CameraDepthPointsSubscriber::lush_convert_type(IDX_PTR($camera_depth_points, float),
+                                                           IDX_PTR($num_points, int)))
          #})
      )
     (idx-changedim camera-depth-points 0 (num-points 0))
     res
     )
+  )
+
+#? (==> <turtlebot> start-pub-cmd-vel)
+;; Start the camera cmd_vel publisher.
+(defmethod turtlebot start-pub-cmd-vel ()
+  (to-int #{ $client->StartSubscriber<CameraDepthPointsSubscriber>() #})
+  )
+
+#? (==> <turtlebot> publish_cmd_vel <linear> <angular>)
+;; Publish the cmd_vel Twist message..
+(defmethod turtlebot publish_cmd_vel (linear angular)
+  ((-idx1- (-double-)) linear)
+  ((-idx1- (-double-)) angular)
+  #{
+    ;
+    $client->Publish<CmdVelPublisher>(
+      CmdVelPublisher::lush_convert_type(IDX_PTR($linear, double),
+                                         IDX_PTR($angular, double)));
+  #}
+  ()
   )
 
 (dhc-make-with-c++
@@ -145,11 +165,13 @@
     #include <cmath>
 
     // Forward declaration.
-    template <typename RosLushStreamTraits> class RosTopicSubscription;
+    template <typename RosLushSubscriberTraits> class RosSubscriber;
+    template <typename RosLushPublisherTraits> class RosPublisher;
 
-    /// <summary> OpenNI camera depth raw stream. </summary>
+    /// <summary> OpenNI camera depth raw subscriber. </summary>
     struct RosLushCameraDepthImageRaw
     {
+      enum { queue_size = 1, };
       typedef sensor_msgs::Image msg_type;
       typedef int_least16_t lush_convert_type;
       inline static const char* TopicStr()
@@ -163,7 +185,7 @@
         memcpy(data, &msg->data[0], dataSize);
       }
     };
-    typedef RosTopicSubscription<RosLushCameraDepthImageRaw> CameraDepthImageRawStream;
+    typedef RosSubscriber<RosLushCameraDepthImageRaw> CameraDepthImageRawSubscriber;
 
     template <typename Vector3>
     inline void CopyVector3(const Vector3& src, double* dst)
@@ -177,7 +199,7 @@
       dst[0] = src.x; dst[1] = src.y; dst[2] = src.z; dst[3] = src.w;
     }
 
-    /// <summary> Turtlebot odometry stream. </summary>
+    /// <summary> Turtlebot odometry subscriber. </summary>
     struct RosLushOdom
     {
       struct OdomData
@@ -190,6 +212,7 @@
         double *pose_position, *pose_orientation, *pose_covariance;
         double *twist_linear, *twist_angular, *twist_covariance;
       };
+      enum { queue_size = 5, };
       typedef nav_msgs::Odometry msg_type;
       typedef OdomData lush_convert_type;
       inline static const char* TopicStr()
@@ -209,9 +232,9 @@
                msg->pose.covariance.size() * sizeof(msg->pose.covariance[0]));
       }
     };
-    typedef RosTopicSubscription<RosLushOdom> OdomStream;
+    typedef RosSubscriber<RosLushOdom> OdomSubscriber;
 
-    /// <summary> Point cloud stream. </summary>
+    /// <summary> Point cloud subscriber. </summary>
     struct RosLushCameraDepthPoints
     {
       struct CloudData
@@ -223,6 +246,7 @@
         float* data;
         int* numPoints;
       };
+      enum { queue_size = 1, };
       typedef sensor_msgs::PointCloud2 msg_type;
       typedef CloudData lush_convert_type;
       inline static const char* TopicStr()
@@ -254,24 +278,56 @@
         }
       }
     };
-    typedef RosTopicSubscription<RosLushCameraDepthPoints> CameraDepthPointsStream;
+    typedef RosSubscriber<RosLushCameraDepthPoints> CameraDepthPointsSubscriber;
 
-    /// <summary> Generic ROS stream logic. </summary>
-    template <typename RosLushStreamTraits>
-    class RosTopicSubscription
+    /// <summary> Twist cmd_vel message publisher. </summary>
+    struct RosLushCmdVel
+    {
+      struct TwistData
+      {
+        TwistData(double* linear_, double* angular_)
+         : linear(linear_),
+           angular(angular_)
+        {}
+        double* linear;
+        double* angular;
+      };
+      enum { queue_size = 5, };
+      typedef geometry_msgs::Twist msg_type;
+      typedef TwistData lush_convert_type;
+      inline static const char* TopicStr()
+      {
+        return "/cmd_vel";
+      }
+      inline static void CopyMsgData(const lush_convert_type& data,
+                                     msg_type* msg)
+      {
+        msg->linear.x = data.linear[0];
+        msg->linear.y = data.linear[1];
+        msg->linear.z = data.linear[2];
+        msg->angular.x = data.angular[0];
+        msg->angular.y = data.angular[1];
+        msg->angular.z = data.angular[2];
+      }
+    };
+    typedef RosPublisher<RosLushCmdVel> CmdVelPublisher;
+
+    /// <summary> Generic ROS subscriber logic. </summary>
+    template <typename RosLushSubscriberTraits>
+    class RosSubscriber
     {
     public:
-      typedef typename RosLushStreamTraits::msg_type msg_type;
-      typedef typename RosLushStreamTraits::lush_convert_type lush_convert_type;
+      typedef typename RosLushSubscriberTraits::msg_type msg_type;
+      typedef typename RosLushSubscriberTraits::lush_convert_type lush_convert_type;
 
-      RosTopicSubscription()
+      RosSubscriber()
       : m_subscriber(),
         m_frId(-1),
         m_lastFrIdUpdated(-1),
         m_mostRecent()
       {}
 
-      virtual ~RosTopicSubscription()
+      virtual ~RosSubscriber()
       {}
 
       /// <summary> Callback for subscription. </summary>
@@ -281,31 +337,32 @@
         ++m_frId;
       }
 
-      /// <summary> Start stream. </summary>
+      /// <summary> Start subscriber. </summary>
       /// <returns> Zero on success, otherwise failure.. </returns>
-      int StartStream(ros::NodeHandle* nodeHandle)
+      int StartSubscriber(ros::NodeHandle* nodeHandle)
       {
         assert(nodeHandle);
         try
         {
-          m_subscriber = nodeHandle->subscribe(RosLushStreamTraits::TopicStr(), 1,
-                                               &RosTopicSubscription::Callback,
+          m_subscriber = nodeHandle->subscribe(RosLushSubscriberTraits::TopicStr(),
+                                               RosLushSubscriberTraits::queue_size,
+                                               &RosSubscriber::Callback,
                                                this);
-          std::cout << "StartStream() : subscribed to "
-                       "'" << RosLushStreamTraits::TopicStr() << "'"
+          std::cout << "StartSubscriber() : subscribed to "
+                       "'" << RosLushSubscriberTraits::TopicStr() << "'"
                     << std::endl;
           return 0;
         }
         catch (std::exception& e)
         {
-          std::cerr << "StartStream() : error subscribing to "
-                       "'" << RosLushStreamTraits::TopicStr() << "'"
+          std::cerr << "StartSubscriber() : error subscribing to "
+                       "'" << RosLushSubscriberTraits::TopicStr() << "'"
                     << std::endl;
           return 1;
         }
       }
 
-      /// <summary> Update stream. </summary>
+      /// <summary> Update subscriber. </summary>
       /// <returns> Non-negative frame id on success. </returns>
       int Update(lush_convert_type* data)
       {
@@ -313,7 +370,7 @@
         if (m_lastFrIdUpdated < m_frId)
         {
           // Copy data then release message.
-          RosLushStreamTraits::CopyMsgData(m_mostRecent, data);
+          RosLushSubscriberTraits::CopyMsgData(m_mostRecent, data);
           m_mostRecent.reset();
           m_lastFrIdUpdated = m_frId;
           return m_lastFrIdUpdated;
@@ -331,14 +388,75 @@
       typename msg_type::ConstPtr m_mostRecent;
     };
 
+    /// <summary> Generic ROS publisher logic. </summary>
+    template <typename RosLushPublisherTraits>
+    class RosPublisher
+    {
+    public:
+      typedef typename RosLushPublisherTraits::msg_type msg_type;
+      typedef typename RosLushPublisherTraits::lush_convert_type lush_convert_type;
+
+      RosPublisher()
+      : m_publisher(),
+        m_msg()
+      {}
+
+      virtual ~RosPublisher()
+      {}
+
+      /// <summary> Start publishing. </summary>
+      /// <returns> Zero on success, otherwise failure.. </returns>
+      int StartPublisher(ros::NodeHandle* nodeHandle)
+      {
+        assert(nodeHandle);
+        try
+        {
+          m_publisher = nodeHandle->advertise(RosLushPublisherTraits::TopicStr(),
+                                              RosLushPublisherTraits::queue_size);
+          std::cout << "StartPublisher() : publishing to "
+                       "'" << RosLushPublisherTraits::TopicStr() << "'"
+                    << std::endl;
+          return 0;
+        }
+        catch (std::exception& e)
+        {
+          std::cerr << "StartPublisher() : error publishing to "
+                       "'" << RosLushPublisherTraits::TopicStr() << "'"
+                    << std::endl;
+          return 1;
+        }
+      }
+
+      /// <summary> Publish a message. </summary>
+      void Publish(const lush_convert_type& data)
+      {
+        // Copy data then publish.
+        // TODO(reissb) -- 20120306 -- To use the shared_ptr API of publish(),
+        //   we will require a memory pool of messages. This only affects
+        //   intra-process operation between nodes.
+        RosLushPublisherTraits::CopyMsgData(data, &m_msg);
+        m_publisher.publish(m_msg);
+      }
+
+    private:
+      ros::Publisher m_publisher;
+      msg_type m_msg;
+    };
+
     /// <summary> The ROS client for turtlebot. </summary>
     /// <remarks>
-    ///   <para> Inherit from stream types to add stream services. </summary>
+    ///   <para> Inherit from subscriber/publisher types to add
+    ///     stream services.
+    ///   </para>
     /// </remarks>
     class RosClient
-      : public CameraDepthImageRawStream,
-        public OdomStream,
-        public CameraDepthPointsStream
+      : // Subscribers.
+        public CameraDepthImageRawSubscriber,
+        public OdomSubscriber,
+        public CameraDepthPointsSubscriber,
+
+        // Publishers
+        public CmdVelPublisher
     {
     public:
       RosClient()
@@ -357,20 +475,36 @@
                   << std::endl;
       }
 
-      /// <summary> Start one of the ROS streams. </summary>
-      template <typename StreamType>
-      inline int StartStream()
+      /// <summary> Start a ROS subscriber. </summary>
+      template <typename SubscriberType>
+      inline int StartSubscriber()
       {
-        StreamType* stream = static_cast<StreamType*>(this);
-        return stream->StartStream(m_nodeHandle.get());
+        SubscriberType* subscriber = static_cast<SubscriberType*>(this);
+        return subscriber->StartSubscriber(m_nodeHandle.get());
       }
 
-      /// <summary> Update one of the ROS streams. </summary>
-      template <typename StreamType>
-      inline int UpdateStream(typename StreamType::lush_convert_type* data)
+      /// <summary> Update a ROS subscriber. </summary>
+      template <typename SubscriberType>
+      inline int Update(typename SubscriberType::lush_convert_type* data)
       {
-        StreamType* stream = static_cast<StreamType*>(this);
-        return stream->Update(data);
+        SubscriberType* subscriber = static_cast<SubscriberType*>(this);
+        return subscriber->Update(data);
+      }
+
+      /// <summary> Start a ROS publisher. </summary>
+      template <typename PublisherType>
+      inline int StartPublisher()
+      {
+        PublisherType* publisher = static_cast<PublisherType*>(this);
+        return publisher->StartPublisher(m_nodeHandle.get());
+      }
+
+      /// <summary> Publish to a ROS publisher. </summary>
+      template <typename PublisherType>
+      inline void Publish(const typename PublisherType::lush_convert_type& data)
+      {
+        PublisherType* publisher = static_cast<PublisherType*>(this);
+        publisher->Publish(data);
       }
 
     private:
@@ -386,14 +520,17 @@
     turtlebot
     -destructor
     ;; Depth image raw.
-    start-stream-camera-depth-image-raw
-    update-stream-camera-depth-image-raw
+    start-sub-camera-depth-image-raw
+    update-camera-depth-image-raw
     ;; Odom.
-    start-stream-odom
-    update-stream-odom
+    start-sub-odom
+    update-odom
     ;; Depth points (XYZ).
-    start-stream-camera-depth-points
-    update-stream-camera-depth-points
+    start-sub-camera-depth-points
+    update-camera-depth-points
+    ;; Publish cmd_vel.
+    start-pub-cmd-vel
+    publish_cmd_vel
     )
   )
 
@@ -401,10 +538,10 @@
 ;; Create a graphics window and show the raw depth data.
 (de turtlebot-test ()
   (let* ((tb (new turtlebot)))
-    (==> tb start-stream-camera-depth-image-raw)
+    (==> tb start-sub-camera-depth-image-raw)
     (new-window)
     (for (i 0 100)
-      (==> tb update-stream-camera-depth-image-raw)
+      (==> tb update-camera-depth-image-raw)
       (gray-draw-matrix 0 0 :tb:camera-depth-image-raw 0 1023 1 1)
       )
     )
