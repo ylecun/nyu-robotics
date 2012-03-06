@@ -1,4 +1,115 @@
+;; Welcome to the RosLush Turtlebot module.
+;;
+;; The module is organized as a set of subscribers and publishers related
+;; to the Turtlebot.
+;;
+;; ADDING A SUBSCRIBER:
+;;   1) Create your traits struct first. The subscriber traits have the
+;;      following implicit interface:
+;;
+;;        struct SubscriberTraits
+;;        {
+;;          // ROS internal queue depth.
+;;          enum { queue_size = SIZE, };
+;;          // The ROS message type to receive.
+;;          typedef MSG_TYPE msg_type;
+;;          // Type passed from Lush. See CopyMsgData() below.
+;;          typedef LUSH_CONVERT_TYPE lush_convert_type;
+;;          // The ROS subscribe topic name.
+;;          static const char* TopicStr();
+;;          // Marshall data from ROS to Lush. Note the single parameter
+;;          // of type lush_convert_type. To pass multiple pointers from
+;;          // lush, define a helper structure.
+;;          static void CopyMsgData(const msg_type::ConstPtr& msg,
+;;                                  lush_convert_type* data);
+;;        };
+;;
+;;      For convenience, typedef your subscriber traits as in
+;;        typedef RosSubscriber<SubscriberTraits> XXXSubscriber;
+;;      Note that the established convention is to use the ROS topic name as
+;;      the prefix for the subscriber type.
+;;
+;;   2) Add the subscriber to the RosStreams by inheriting from it as in
+;;        class RosStreams : public XXXSubscriber {};
+;;   
+;;   3) Create the ROS wrapper methods to start and receive from the subscriber.
+;;        #? (==> <turtlebot> start-sub-XXX)
+;;        ;; Start the XXX subscriber.
+;;        (defmethod turtlebot start-sub-XXX ()
+;;          (to-int #{ $client->StartSubscriber<XXXSubscriber>() #})
+;;          )
+;;        
+;;        #? (==> <turtlebot> update-XXX)
+;;        ;; Update the XXX subscriber.
+;;        (defmethod turtlebot update-XXX ()
+;;          (to-int #{
+;;             $client->Update<XXXSubscriber>(IDX_PTR($XXX_LUSH, DATA_TYPE))
+;;             #})
+;;          )
+;;   
+;; ADDING A PUBLISHER:
+;;   1) Create your traits struct first. The publisher traits have the
+;;      following implicit interface:
+;;
+;;        struct PublisherTraits
+;;        {
+;;          // ROS internal queue depth.
+;;          enum { queue_size = SIZE, };
+;;          // The ROS message type to publish.
+;;          typedef MSG_TYPE msg_type;
+;;          // Type passed from Lush. See CopyMsgData() below.
+;;          typedef LUSH_CONVERT_TYPE lush_convert_type;
+;;          // The ROS publish topic name.
+;;          static const char* TopicStr();
+;;          // Marshall data from Lush to ROS. Note the single parameter
+;;          // of type lush_convert_type. To pass multiple pointers from
+;;          // lush, define a helper structure.
+;;          static void CopyMsgData(const lush_convert_type& data,
+;;                                  msg_type* msg);
+;;        };
+;;
+;;      For convenience, typedef your publisher traits as in
+;;        typedef RosPublisher<PublisherTraits> XXXPublisher;
+;;      Note that the established convention is to use the ROS topic name as
+;;      the prefix for the publisher type.
+;;
+;;   2) Add the publisher to the RosStreams by inheriting from it as in
+;;        class RosStreams : public XXXPublisher {};
+;;   
+;;   3) Create the ROS wrapper methods to start and publish to the publisher.
+;;        #? (==> <turtlebot> start-pub-XXX)
+;;        ;; Start the XXX publisher.
+;;        (defmethod turtlebot start-pub-XXX ()
+;;          (to-int #{ $client->StartPublisher<XXXPublisher>() #})
+;;          )
+;;        
+;;        #? (==> <turtlebot> publish-XXX <linear> <angular>)
+;;        ;; Publish the XXX message.
+;;        (defmethod turtlebot publish-XXX (DATA_0 DATA_1)
+;;          ((-idx1- (-double-)) linear)
+;;          ((-idx1- (-double-)) angular)
+;;          #{
+;;            $client->Publish<XXXPublisher>(
+;;              XXXPublisher::lush_convert_type(IDX_PTR($DATA_0, DATA_0_TYPE),
+;;                                              IDX_PTR($DATA_1, DATA_1_TYPE)));
+;;          #}
+;;          ()
+;;          )
+;;
+;;      In the previous example, we create a temporary instance of
+;;      the lush_convert_type to pass data from Lush to ROS. This is the
+;;      established pattern when dealing with multiple parameters within the
+;;      wrapper interfaces.
+;;        
+;;   
+
 (libload "ros/ros")
+
+;; Set include roslush path.
+(let* ((dir (dirname file-being-loaded)))
+  (setq c-include-path (cons (concat dir
+                             "/../ros") c-include-path))
+  )
 
 ;; Add include paths for roscpp.
 (setq c-include-path (cons (concat (rospath "roscpp")
@@ -126,18 +237,17 @@
   )
 
 #? (==> <turtlebot> start-pub-cmd-vel)
-;; Start the camera cmd_vel publisher.
+;; Start the cmd_vel publisher.
 (defmethod turtlebot start-pub-cmd-vel ()
   (to-int #{ $client->StartPublisher<CmdVelPublisher>() #})
   )
 
-#? (==> <turtlebot> publish_cmd_vel <linear> <angular>)
-;; Publish the cmd_vel Twist message..
-(defmethod turtlebot publish_cmd_vel (linear angular)
+#? (==> <turtlebot> publish-cmd-vel <linear> <angular>)
+;; Publish the cmd_vel Twist message. Uses linear and angular velocities.
+(defmethod turtlebot publish-cmd-vel (linear angular)
   ((-idx1- (-double-)) linear)
   ((-idx1- (-double-)) angular)
   #{
-    ;
     $client->Publish<CmdVelPublisher>(
       CmdVelPublisher::lush_convert_type(IDX_PTR($linear, double),
                                          IDX_PTR($angular, double)));
@@ -149,25 +259,14 @@
   ()
   `(,(concat (rospath "roscpp") "/lib/libros.so"))
   #{
-    #include "ros/ros.h"
-    #include "ros/exceptions.h"
+    #include "roslush.h"
     #include "sensor_msgs/Image.h"
     #include "geometry_msgs/Twist.h"
     #include "nav_msgs/Odometry.h"
     #include "sensor_msgs/PointCloud2.h"
     #include "sensor_msgs/Imu.h"
-    #include "boost/scoped_ptr.hpp"
-    #include <exception>
-    #include <string>
-    #include <iostream>
-    #include <stdint.h>
     #include <cstring>
-    #include <cmath>
-
-    // Forward declaration.
-    template <typename RosLushSubscriberTraits> class RosSubscriber;
-    template <typename RosLushPublisherTraits> class RosPublisher;
-
+   
     /// <summary> OpenNI camera depth raw subscriber. </summary>
     struct RosLushCameraDepthImageRaw
     {
@@ -312,210 +411,17 @@
     };
     typedef RosPublisher<RosLushCmdVel> CmdVelPublisher;
 
-    /// <summary> Generic ROS subscriber logic. </summary>
-    template <typename RosLushSubscriberTraits>
-    class RosSubscriber
-    {
-    public:
-      typedef typename RosLushSubscriberTraits::msg_type msg_type;
-      typedef typename RosLushSubscriberTraits::lush_convert_type lush_convert_type;
-
-      RosSubscriber()
-      : m_subscriber(),
-        m_frId(-1),
-        m_lastFrIdUpdated(-1),
-        m_mostRecent()
-      {}
-
-      virtual ~RosSubscriber()
-      {}
-
-      /// <summary> Callback for subscription. </summary>
-      void Callback(const typename msg_type::ConstPtr& msg)
-      {
-        m_mostRecent = msg;
-        ++m_frId;
-      }
-
-      /// <summary> Start subscriber. </summary>
-      /// <returns> Zero on success, otherwise failure.. </returns>
-      int StartSubscriber(ros::NodeHandle* nodeHandle)
-      {
-        assert(nodeHandle);
-        try
-        {
-          m_subscriber = nodeHandle->subscribe(RosLushSubscriberTraits::TopicStr(),
-                                               RosLushSubscriberTraits::queue_size,
-                                               &RosSubscriber::Callback,
-                                               this);
-          std::cout << "StartSubscriber() : subscribed to "
-                       "'" << RosLushSubscriberTraits::TopicStr() << "'"
-                    << std::endl;
-          return 0;
-        }
-        catch (std::exception& e)
-        {
-          std::cerr << "StartSubscriber() : error subscribing to "
-                       "'" << RosLushSubscriberTraits::TopicStr() << "'"
-                    << std::endl;
-          return 1;
-        }
-      }
-
-      /// <summary> Update subscriber. </summary>
-      /// <returns> Non-negative frame id on success. </returns>
-      int Update(lush_convert_type* data)
-      {
-        ros::spinOnce();
-        if (m_lastFrIdUpdated < m_frId)
-        {
-          // Copy data then release message.
-          RosLushSubscriberTraits::CopyMsgData(m_mostRecent, data);
-          m_mostRecent.reset();
-          m_lastFrIdUpdated = m_frId;
-          return m_lastFrIdUpdated;
-        }
-        else
-        {
-          return -1;
-        }
-      }
-
-    private:
-      ros::Subscriber m_subscriber;
-      int32_t m_frId;
-      int32_t m_lastFrIdUpdated;
-      typename msg_type::ConstPtr m_mostRecent;
-    };
-
-    /// <summary> Generic ROS publisher logic. </summary>
-    template <typename RosLushPublisherTraits>
-    class RosPublisher
-    {
-    public:
-      typedef typename RosLushPublisherTraits::msg_type msg_type;
-      typedef typename RosLushPublisherTraits::lush_convert_type lush_convert_type;
-
-      RosPublisher()
-      : m_publisher(),
-        m_msg()
-      {}
-
-      virtual ~RosPublisher()
-      {}
-
-      /// <summary> Start publishing. </summary>
-      /// <returns> Zero on success, otherwise failure.. </returns>
-      int StartPublisher(ros::NodeHandle* nodeHandle)
-      {
-        assert(nodeHandle);
-        try
-        {
-          const std::string topicStr(RosLushPublisherTraits::TopicStr());
-          const uint32_t queueSize = RosLushPublisherTraits::queue_size;
-          m_publisher = nodeHandle->advertise<msg_type>(topicStr, queueSize);
-          std::cout << "StartPublisher() : publishing to "
-                       "'" << RosLushPublisherTraits::TopicStr() << "'"
-                    << std::endl;
-          return 0;
-        }
-        catch (std::exception& e)
-        {
-          std::cerr << "StartPublisher() : error publishing to "
-                       "'" << RosLushPublisherTraits::TopicStr() << "'"
-                    << std::endl;
-          return 1;
-        }
-      }
-
-      /// <summary> Publish a message. </summary>
-      void Publish(const lush_convert_type& data)
-      {
-        // Copy data then publish.
-        // TODO(reissb) -- 20120306 -- To use the shared_ptr API of publish(),
-        //   we will require a memory pool of messages. This only affects
-        //   intra-process operation between nodes.
-        RosLushPublisherTraits::CopyMsgData(data, &m_msg);
-        m_publisher.publish(m_msg);
-      }
-
-    private:
-      ros::Publisher m_publisher;
-      msg_type m_msg;
-    };
-
-    /// <summary> The ROS client for turtlebot. </summary>
-    /// <remarks>
-    ///   <para> Inherit from subscriber/publisher types to add
-    ///     stream services.
-    ///   </para>
-    /// </remarks>
-    class RosClient
+    /// <summary> ROS streams for turtlebot. </summary>
+    class RosStreams
       : // Subscribers.
         public CameraDepthImageRawSubscriber,
         public OdomSubscriber,
         public CameraDepthPointsSubscriber,
-
         // Publishers
         public CmdVelPublisher
-    {
-    public:
-      RosClient()
-      : m_nodeHandle(NULL)
-      {
-        // Init ROS.
-        {
-          ros::VP_string remappings;
-          ros::init(remappings, std::string("listener"),
-                    ros::init_options::AnonymousName);
-        }
-        std::cout << "RosClient() : initialized ros" << std::endl;
-        // Start the node.
-        m_nodeHandle.reset(new ros::NodeHandle());
-        std::cout << "RosClient() : started node " << m_nodeHandle
-                  << std::endl;
-      }
-
-      /// <summary> Start a ROS subscriber. </summary>
-      template <typename SubscriberType>
-      inline int StartSubscriber()
-      {
-        SubscriberType* subscriber = static_cast<SubscriberType*>(this);
-        return subscriber->StartSubscriber(m_nodeHandle.get());
-      }
-
-      /// <summary> Update a ROS subscriber. </summary>
-      template <typename SubscriberType>
-      inline int Update(typename SubscriberType::lush_convert_type* data)
-      {
-        SubscriberType* subscriber = static_cast<SubscriberType*>(this);
-        return subscriber->Update(data);
-      }
-
-      /// <summary> Start a ROS publisher. </summary>
-      template <typename PublisherType>
-      inline int StartPublisher()
-      {
-        PublisherType* publisher = static_cast<PublisherType*>(this);
-        return publisher->StartPublisher(m_nodeHandle.get());
-      }
-
-      /// <summary> Publish to a ROS publisher. </summary>
-      template <typename PublisherType>
-      inline void Publish(const typename PublisherType::lush_convert_type& data)
-      {
-        PublisherType* publisher = static_cast<PublisherType*>(this);
-        publisher->Publish(data);
-      }
-
-    private:
-      // Disable copy and assign.
-      RosClient(const RosClient&);
-      RosClient& operator=(const RosClient&);
-
-      /// <summary> The ROS node maintains the connections. </summary>
-      boost::scoped_ptr<ros::NodeHandle> m_nodeHandle;
-    };
+    {};
+    /// <summary> The ROS client for turtlebot. </summary>
+   typedef RosClientBase<RosStreams> RosClient;
   #}
   (turtlebot
     turtlebot
