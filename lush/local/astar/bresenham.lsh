@@ -1,0 +1,319 @@
+(libload "libc/constants")
+
+(defconstant "LETHAL" 128)
+
+#? (bresenham <p> <v> <x0> <y0> <x1> <y1>)
+;; draw a line with value <v> into 2D int matrix <p>
+;; from coordinates <x0> <y0> to <x1> <y1>.
+;; If the content of <p> is displayed using
+;; <rgb-draw-matrix>, the origin is at the top left, 
+;; the X axis goes to the right and the Y axis goes down.
+(de bresenham (p v x0 y0 x1 y1)
+  ((-idx2- (-int-)) p)
+  ((-int-) v)
+  ((-int-) x0 x1 y0 y1)
+  (let* ((steep (> (abs (- y1 y0)) (abs (- x1 x0))))
+	 (xm (idx-modulo p 1))
+	 (ym (idx-modulo p 0)))
+    ((-int-) xm ym)
+    (when steep 
+      (let ((tmp x0)) (setq x0 y0) (setq y0 tmp))
+      (let ((tmp x1)) (setq x1 y1) (setq y1 tmp))
+      (let ((tmp xm)) (setq xm ym) (setq ym tmp)))
+    #{{ int *p = IDX_PTR($p,int);
+        int deltax = abs($x1-$x0);
+        int deltay = abs($y1-$y0);
+        int error = 0;
+        int deltaerr = deltay;
+        int x = $x0;
+        int y = $y0;
+        int xstep = ($x0<$x1)? 1:-1;
+        int ystep = ($y0<$y1)? 1:-1;
+        p[$ym*y+$xm*x]=$v;
+        while ( x != $x1 ) {
+          x += xstep;
+          error += deltaerr;
+          if ( (error<<1) > deltax) {
+            y += ystep;
+            error -= deltax; 
+          }
+          p[$ym*y+$xm*x]=$v;
+        }
+    }#} ()))
+
+
+#? (ray-cast-simple <p> <x> <y> <a> <d> <xyv>)
+;; cast a ray from location <(x,y)> in 2D array <p> at distance <d> in
+;; direction <a> (in radian), and write the coordinates of the first
+;; non zero pixel and its value into <xyv>. A value of -1 is written
+;; is the border of array was reached. A value of 0 is written if the
+;; target point was reached without encountering a non-zero pixel.
+;; Unknown pixels should be given a value of -1, so they appear like
+;; like off-boundary pixels.
+(de ray-cast-simple (p x0 y0 a d xyv)
+  ((-idx2- (-int-)) p)
+  ((-idx1- (-int-)) xyv)
+  ((-int-) x0 y0)
+  ((-float-) a d)
+  (let* ((x1 (to-int (+ (to-float x0) (* d (cos a)))))
+	 (y1 (to-int (+ (to-float y0) (* d (sin a)))))
+	 (steep (> (abs (- y1 y0)) (abs (- x1 x0))))
+	 (xm (idx-modulo p 1))
+	 (ym (idx-modulo p 0))
+	 (xmax (1- (idx-dim p 1)))
+	 (ymax (1- (idx-dim p 0))))
+    ((-int-) xm ym xmax ymax)
+    (when steep 
+      (let ((tmp x0)) (setq x0 y0) (setq y0 tmp))
+      (let ((tmp x1)) (setq x1 y1) (setq y1 tmp))
+      (let ((tmp xm)) (setq xm ym) (setq ym tmp))
+      (let ((tmp xmax)) (setq xmax ymax) (setq ymax tmp)))
+    #{{ int *p = IDX_PTR($p,int);
+        int *xyv = IDX_PTR($xyv,int);
+        int deltax = abs($x1-$x0);
+        int deltay = abs($y1-$y0);
+        int error = 0;
+        int keepgoing = 1;
+        int deltaerr = deltay;
+        int x = $x0;
+        int y = $y0;
+        int xstep = ($x0<$x1)? 1:-1;
+        int ystep = ($y0<$y1)? 1:-1;
+        xyv[0]= $x1; xyv[1]= $y1; xyv[2]= 0;
+        while ( (x != $x1) && keepgoing ) {
+          x += xstep;
+          error += deltaerr;
+          if ( (error<<1) > deltax) {
+            y += ystep;
+            error -= deltax; 
+          }
+          if ( (x<0)||(x>$xmax)||(y<0)||(y>$ymax) ) {
+            xyv[0]=x; xyv[1]=y; xyv[2]= -1; keepgoing=0; 
+          } else {
+           int v = p[$ym*y+$xm*x];
+           if (v != 0) { xyv[0]=x; xyv[1]=y; xyv[2]=v; keepgoing=0; }
+          }
+        }
+    }#} 
+    (when steep (let ((tmp (xyv 0))) (xyv 0 (xyv 1)) (xyv 1 tmp)))
+    ()))
+
+
+#? (ray-cast <p> <map> <v> <x> <y> <a> <d> <xyv>)
+;; cast a ray from location <(x,y)> at distance <d> in
+;; direction <a> (in radian), and write the coordinates of the first
+;; non traversible pixel and its value into <xyv>. A value of -1 is written
+;; is the border of array was reached. A value of 0 is written if the
+;; target point was reached without encountering a non-zero pixel.
+;; Unknown pixels should be given a value of -1, so they appear like
+;; like off-boundary pixels.
+;; <p> is the real map being explored
+;; <map> is the map being built.
+;; A ray ends whenever a non-traversible pixel (whose value is larger
+;; than @@LETHAL) is reached, or whenever a previously cast ray
+;; is reached (as indicated in <map>).
+;; <v> is the value to be written in the map under each ray.
+;; On output, <xyvv> will be an array (a vector of vectors),
+;; whose i-th row contains information about the end-point of the
+;; i-th ray: x,y location, value in p, value in m: 0 for traversible,
+;; -1 for previous ray, and a positive number large than @@LETHAL
+;; for an obstacle.
+(de ray-cast (p m v x0 y0 a d xyvv)
+  ((-idx2- (-int-)) p)
+  ((-idx2- (-int-)) m)
+  ((-idx1- (-int-)) xyvv)
+  ((-int-) x0 y0 v)
+  ((-float-) a d)
+  (when (or (<> (idx-dim p 0) (idx-dim m 0))
+	    (<> (idx-dim p 1) (idx-dim m 1))
+	    (<> 4 (idx-dim xyvv 0))
+	    (< x0 0) (> x0 (1- (idx-dim m 1)))
+	    (< y0 0) (> y0 (1- (idx-dim m 0)))
+	    (<= d 0))
+    (printf "x0=%d, y0=%d, d=%g, xmax=%d, ymax=%d\n" x0 y0 d (1- (idx-dim p 1)) (1- (idx-dim p 0)))
+    (error "illegal arguments"))
+  (let* ((x1 (to-int (+ (to-float x0) (* d (cos a)))))
+	 (y1 (to-int (+ (to-float y0) (* d (sin a)))))
+	 (steep (> (abs (- y1 y0)) (abs (- x1 x0))))
+	 (xmp (idx-modulo p 1))
+	 (ymp (idx-modulo p 0))
+	 (xmm (idx-modulo m 1))
+	 (ymm (idx-modulo m 0))
+	 (xmax (1- (idx-dim p 1)))
+	 (ymax (1- (idx-dim p 0)))
+	 (mortel @@LETHAL)
+	 (opmax (+ (* ymp ymax) (* xmp xmax)))
+	 (ommax (+ (* ymm ymax) (* xmm xmax))))
+    ((-int-) xmp ymp xmm ymm xmax ymax mortel opmax ommax)
+    (when steep 
+      (let ((tmp x0)) (setq x0 y0) (setq y0 tmp))
+      (let ((tmp x1)) (setq x1 y1) (setq y1 tmp))
+      (let ((tmp xmp)) (setq xmp ymp) (setq ymp tmp))
+      (let ((tmp xmm)) (setq xmm ymm) (setq ymm tmp))
+      (let ((tmp xmax)) (setq xmax ymax) (setq ymax tmp)))
+    #{{ int *p = IDX_PTR($p,int);
+        int *m = IDX_PTR($m,int);
+        int *xyvv = IDX_PTR($xyvv,int);
+        int deltax = abs($x1-$x0);
+        int deltay = abs($y1-$y0);
+        int error = 0;
+        int keepgoing = 1;
+        int deltaerr = deltay;
+        int x = $x0;
+        int y = $y0;
+        int xstep = ($x0<$x1)? 1:-1;
+        int ystep = ($y0<$y1)? 1:-1;
+        int xu = (x==$xmax)?x:x+1;
+        int xd = (x==0)?x:x-1;
+        int yu = (y==$ymax)?y:y+1;
+        int yd = (y==0)?y:y-1;
+        m[$ymm*y+$xmm*x]=$v;
+        m[$ymm*yd+$xmm*xd]=$v;
+        m[$ymm*yd+$xmm*x]=$v;
+        m[$ymm*yd+$xmm*xu]=$v;
+        m[$ymm*y+$xmm*xd]=$v;
+        m[$ymm*y+$xmm*xu]=$v;
+        m[$ymm*yu+$xmm*xd]=$v;
+        m[$ymm*yu+$xmm*x]=$v;
+        m[$ymm*yu+$xmm*xu]=$v;
+        xyvv[0]= $x1; xyvv[1]= $y1; xyvv[2]= 0; xyvv[3]= 0;
+
+        while ( (x != $x1) && keepgoing ) {
+          x += xstep;
+          error += deltaerr;
+          if ( (error<<1) > deltax) {
+            y += ystep;
+            error -= deltax; 
+          }
+          if ( (x<0)||(x>$xmax)||(y<0)||(y>$ymax) ) {
+            xyvv[0]=x; xyvv[1]=y; xyvv[2]= -1; xyvv[3]= -1; keepgoing=0; 
+            /* printf("border x=%d y=%d, xmax=%d, ymax=%d\n",x,y,$xmax,$ymax); */
+          } else {
+           int op = $ymp*y+$xmp*x;
+           int om = $ymm*y+$xmm*x;
+           int om1 = $ymm*((y<1)?y:y-1)+$xmm*x;
+           if ((op<0)||(op>$opmax)||(om<0)||(om>$ommax)||(om1<0)||(om1>$ommax))
+            printf("x=%d, y=%d, xmp=%d, ymp=%d, xmm=%d, ymm=%d, op=%d, om=%d, om1=%d, opmax=%d ommax=%d\n",
+                    x,y,$xmp,$ymp,$xmm,$ymm,op,om,om1,$opmax,$ommax); 
+           if ( (p[op] >= $mortel) || (p[op]<0) ) { 
+             xyvv[0]=x; xyvv[1]=y; xyvv[2]=p[op]; xyvv[3]=p[op]; keepgoing=0; 
+             /* printf("obstacle x=%d y=%d, xmax=%d, ymax=%d\n",x,y,$xmax,$ymax); */
+           } else if ( ((m[om] != 0) && (m[om] != $v)) || 
+                       ((m[om1] != 0) && (m[om1] != $v))) {
+             xyvv[0]=x; xyvv[1]=y; xyvv[2]=p[op]; xyvv[3]= -2; keepgoing=0; 
+             / *printf("ray x0=%d, y0=%d, a=%g, x=%d y=%d, xmax=%d, ymax=%d, v=%d, m[om]=%d, m[om1]=%d\n",
+                    $x0,$y0,$a,x,y,$xmax,$ymax,$v,m[om],m[om1]); */
+           }
+           else {
+             /* printf("writing %d",om); fflush(stdout); */
+             m[om]=$v;
+             /* printf("done\n",om); */
+           }
+          }
+        }
+    }#} 
+    (when steep (let ((tmp (xyvv 0))) (xyvv 0 (xyvv 1)) (xyvv 1 tmp)))
+    ()))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? (idx-i2flip0 <input>)
+;; flip a float image upside down and return the result
+(de idx-i2flip0 (input)
+  ((-idx2- (-int-)) input)
+  (let* ((n (idx-dim input 0))
+	 (output (float-matrix n (idx-dim input 1))))
+    (idx-bloop ((in input))
+      (incr n -1)
+      (idx-copy in (select output 0 n)))
+    output))
+
+(de rgb-draw-matrix-flip (x y m &optional (sx 1) (sy 1))
+  (rgb-draw-matrix x y (idx-i2flip0 m) sx sy))
+
+
+;; (setq dhc-make-overrides (alist-add "OPTS" "-g" dhc-make-overrides))
+(dhc-make () bresenham ray-cast-simple ray-cast idx-i2flip0)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de test-bresenham ()
+  (defparameter p (int-matrix 500 500))
+  (bresenham p 255  200 250 450 300)
+  (bresenham p 160  200 250 450 200)
+  (bresenham p 255  200 250 230 30)
+  (bresenham p 160  200 250 180 30)
+  (bresenham p 255  200 250 30 230)
+  (bresenham p 160  200 250 30 280)
+  (bresenham p 255  200 250 180 400)
+  (bresenham p 160  200 250 230 400)
+  (when (not window) (new-window))
+  (rgb-draw-matrix 0 0 p))
+
+(de test-bresenham-2 (n)
+  (defparameter p (int-matrix 500 500))
+  (setq m (int-matrix n 4))
+  (idx-bloop ((r m)) (idx-bloop ((x r)) (x (int (rand 0 500)))))
+  (printf "time=%g\n" (* 1e6 (/ (time (idx-bloop ((r m)) (bresenham p 255 (r 0) (r 1) (r 2) (r 3)))) n)))
+  (when (not window) (new-window))
+  (rgb-draw-matrix 0 0 p))
+  
+(de init-ray-cast-simple (f)
+  (libload "libimage/image-io")
+  (defparameter mapimage (image-read-ubim f))
+  (defparameter p (int-matrix (idx-dim mapimage 0) (idx-dim mapimage 1)))
+  (defparameter xyv (int-matrix 3))
+  (idx-copy mapimage p)
+  (when (not window) (new-window))
+  (rgb-draw-matrix 0 0 p))
+
+(de test-ray-cast-simple (x y a d)
+  (rgb-draw-matrix 0 0 p)
+  (for (ang (- a 60) (+ a 60) 5)
+       (ray-cast-simple p x y (* (/ 3.1415927 180) ang) d xyv)
+       (selectq (xyv 2)
+	 (-1 (color-rgb 1 0 0)) 	; unknown
+	 (0 (color-rgb 0 1 0))		; no obstacle
+	 (t  (color-rgb 0 0 1)))	; obstacle
+       (draw-line x y (xyv 0) (xyv 1))))
+
+  
+(de init-ray-cast (f)
+  (libload "libimage/image-io")
+  (defparameter mapimage (image-read-ubim f))
+  (defparameter p (int-matrix (idx-dim mapimage 0) (idx-dim mapimage 1)))
+  (defparameter m (int-matrix (idx-dim mapimage 0) (idx-dim mapimage 1)))
+  (defparameter xyvv (int-matrix 4))
+  (idx-copy mapimage p)
+  (idx-clear m)
+  (setq vid 128)
+  (when (not window) (new-window))
+  (rgb-draw-matrix 0 0 p)
+  (rgb-draw-matrix (+ 4 (idx-dim p 1)) 0 m))
+
+(de test-ray-cast (x y a d)
+  (rgb-draw-matrix 0 0 p)
+  (for (ang (- a 60) (+ a 60) 5)
+       (ray-cast p m vid x y (* (/ 3.1415927 180) ang) d xyvv)
+       (cond
+	 ((= -1 (xyvv 2)) (color-rgb 1 0 0)) 	; unknown
+	 ((= -2 (xyvv 3)) (color-rgb 0 1 1)) 	; previous ray
+	 ((= 0 (xyvv 2)) (color-rgb 0 1 0))	; no obstacle
+	 (t  (color-rgb 0 0 1)))	; obstacle
+       (draw-line x y (xyvv 0) (xyvv 1)))
+  (incr vid)
+  (rgb-draw-matrix (+ 4 (idx-dim p 1)) 0 m))
+
+;; the candidate waypoints don't seem to be always
+;; exactly where they should be because of rounding errors.
+(de debug-rc ()
+  (setq p (int-matrix 300 300))
+  (setq m (int-matrix 300 300))
+  (setq zz0 (int-matrix 4))
+  (setq zz1 (int-matrix 4))
+  (setq zz2 (int-matrix 4))
+  (setq zz3 (int-matrix 4))
+  (ray-cast p m 100 200 200 -1.5708 150 zz0)
+  (for (y 194 60 -4)
+       (ray-cast p m 200 199 y 3.14159 100 zz1))
+  (rgb-draw-matrix 0 0 m)
+  ()))

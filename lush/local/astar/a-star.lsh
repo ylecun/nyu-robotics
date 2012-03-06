@@ -1,0 +1,291 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; File:      a-star.lsh
+;;
+;; Brief:     Lush implementation of the A* path planning
+;;            algorithm.
+;;
+;; Author(s): Urs Muller, Yann LeCun
+;;
+;; Created:   October 4, 2005
+;; Modified:  October 7, 2005 (um)
+;; Modified:  October 10,2005 (ylc)
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; This library implements the A-Star path planning algorithm.
+;; Pseudo-code for A* can be found here:
+;; http://upe.acm.jhu.edu/websites/Benny_Tsai/Introduction%20to%20AStar.htm
+;; http://www.geocities.com/jheyesjones/pseudocode.html
+;; A tutorial to A-Star can be found in file Astar_tutorial.pdf
+;; which is from:
+;; www.pages.drexel.edu/~vpp23/Tutorials/Astar/Astar_files/Astar_tutorial.pdf
+;; The tutorial is full of typos and the pseudo-code is slightly wrong.
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(libload "libc/constants")
+
+#? *** A-Star Path Planning
+;; The A* algorithm implemented here operates on a 
+;; graph of <astar-node> objects or sub-classes thereof.
+;; The <astar-node> is assumed to understand two methods
+;; <get-children> and <lower-bound>.
+;; Method <get-children> must return a list of pairs
+;; <(child cost)>, where <child> is a child node
+;; of the current node, and <cost> is the cost
+;; of taking the transition from the current node
+;; to <child> and passing through the node <child>
+;; (the sum of the transition cost and target node
+;; cost).
+;; Method <lower-bound> must return an estimated lower 
+;; bound of the total of the path from the current node
+;; to the node passed as argument (generally the target goal).
+;; Unlike with most implementations, the present code
+;; does not explicitely construct a CLOSED list,
+;; it merely marks preexisting node objects as open
+;; closed or untouched. There is an explicit OPEN list
+;; currently implemented as an unsorted list, which
+;; is inefficient. This should be implemented as a
+;; binary heap. 
+
+#? ** A-star Node
+;; The A-star algorithm performs a search through a 
+;; graphg of A-star nodes, which can be subclasses
+;; of the abstract class <astar-node>.
+;; The <astar-node> must understand two methods
+;; <get-children> and <lower-bound>.
+;; Method <get-children> must return a list of pairs
+;; <(child cost)>, where <child> is a child node
+;; of the current node, and <cost> is the cost
+;; of taking the transition from the current node
+;; to <child> and passing through the node <child>
+;; (the sum of the transition cost and target node
+;; cost).
+;; Method <lower-bound> must return an estimated lower 
+;; bound of the total of the path from the current node
+;; to the node passed as argument (generally the target goal).
+
+#? * astar-node
+;; Abstract class definition for a node in a graph
+;; to be searched by A*. This contains 4 slots:
+;; <cost-to>: the current estimate of the minimum
+;; path from the start to the current node; 
+;; <cost-from>: the lower bound on the cost from
+;; the current node to the goal.
+;; <status>: a variable set to @@UNTOUCHED (=0)
+;; when the node has not yet been visited, 
+;; @@OPEN (=1) when it is on the leading edge
+;; (the open list), and @@CLOSED (=-1) when it has
+;; been fully examined (on the closed list).
+;; <ancestor>: the ancestor node in the shortest
+;; path from the start.
+(defclass astar-node object
+  ;; cost of minimum path to get here
+  cost-to 
+  ;; lower bound of path to get to goal
+  cost-from
+  ;; 0: untouched, 1 open, -1 closed.
+  status 				
+  ancestor)
+
+(defconstant "OPEN" 1)
+(defconstant "CLOSED" -1)
+(defconstant "UNTOUCHED" 0)
+
+#? (==> <astar-node> get-children)
+;; return a list of pairs 
+;; <((node1 cost1) (node2 cost2)....)>
+;; where <node1...> are all the children of the current 
+;; node in the graph, and <cost1...> are the cost
+;; taking the transition to the child and passing
+;; through it.
+(defmethod astar-node get-children () 
+  (error "get-children: undefined method"))
+
+#? (==> <astar-node> lower-bound <target>)
+;; return a lower bound on the distance to <target>.
+(defmethod astar-node lower-bound (end-node) 
+  (error "lower-bound: undefined method"))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? * 2dmap-node
+;; An implementation of astar-node for a 2D
+(defclass 2dmap-node astar-node
+  x y cost
+  children)
+
+(defmethod 2dmap-node 2dmap-node (xx yy c)
+  (setq x xx) (setq y yy) (setq cost c) (setq status 0))
+
+(defmethod 2dmap-node lower-bound (target)
+  (setq cost-from (edistance x y :target:x :target:y)))
+
+(defmethod 2dmap-node lower-bound (target lb-param)
+  (setq cost-from (* lb-param (edistance x y :target:x :target:y))))
+
+
+
+(defmethod 2dmap-node get-children () 
+  (all ((n children))
+    (list n (+ (edistance :n:x :n:y x y) :n:cost))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? * astar utility functions
+
+#? (edistance <x1> <y1> <x2> <y2>)
+;; return Euclidean distance between <x1,y1>
+;; and <x2,y2>. 
+(de edistance (x1 y1 x2 y2)
+  (let ((dx (- x2 x1)) (dy (- y2 y1)))
+    (sqrt (+ (* dx dx) (* dy dy)))))
+
+#? (push <listsymbol> <element>)
+;; macro to push an element on a list in symbol <symblist>. 
+;; equivalent to <(setq listsymbol (cons element listsymbol))>.
+(dmd push (l x) `(setq ,l (cons ,x ,l)))
+
+#? (pop <listsymbol>)
+;; pop the first element from the list in 
+;; <listsymbol> and return it.
+(dmd pop (l) `(prog1 (car ,l) (setq ,l (cdr ,l))))
+
+#? (get-cheapest-node <listsymbol>)
+;; macro that physically removes the smallest 
+;; element from the list contained in symbol
+;; <listsymbol>, and returns it.
+;; This is used to extract candidate nodes from the
+;; OPEN list, but should really be implemented as a heap.
+(dmd get-cheapest-node (l)
+  `(let* ((n ()) (c (+ :(car ,l):cost-to :(car ,l):cost-from)) (ll ,l))
+     (while (cdr ll)
+       (let* ((x (cadr ll))
+	      (xc (+ :x:cost-to :x:cost-from)))
+	 ;; (print x xc n c)
+	 (when (< xc c) (setq n ll) (setq c xc)))
+       (setq ll (cdr ll)))
+     (if (not n)
+	 (prog1
+	     (car ,l)
+	   (setq ,l (cdr ,l)))
+       (prog1
+	   (cadr n)
+	 (rplacd n (cddr n))))))
+
+
+(dmd get-cheapest-node-debug (l)
+  `(let* ((n ()) (c (+ :(car ,l):cost-to :(car ,l):cost-from)) (ll ,l) (i 0))
+     (printf "--------------------\n")
+     (while (cdr ll)
+       (let* ((x (cadr ll))
+	      (xc (+ :x:cost-to :x:cost-from)))
+	 (printf "%4d (%3d,%3d) %g" i :x:x :x:y xc)
+	 (when (< xc c) (printf " * old=%g new=%g" c xc) (setq n ll) (setq c xc)))
+       (printf "\n")
+       (incr i)
+       (setq ll (cdr ll)))
+     (if (not n)
+	 (prog1
+	     (car ,l)
+	   (setq ,l (cdr ,l)))
+       (prog1
+	   (cadr n)
+	 (rplacd n (cddr n))))))
+
+
+
+
+;; THIS FUNCTION IS NOT USED IN THE CURRENT IMPLEMENTATION
+;; insert an object <node> in its rightful place in
+;; a sorted list of objects <node-list>.
+;; The objects are sorted in ascending order
+;; of the value of slot <value>.
+;; use like this:
+;; (de comp-node (n1 n2) (< :n1:value :n2:value))
+;; (sorted-insert nlist newnode comp-node)
+(dmd sorted-insert (node-list node test)
+  `(setq ,node-list
+	 (if (not ,node-list) 
+	     (list ,node)
+	   (if (,test ,node (car ,node-list)) 
+	       ;; if less than first element, insert at the head
+	       (cons ,node ,node-list)
+	     (let ((l ,node-list))
+	       ;; loop over list elements while node value
+	       ;; is larger than list head value.
+	       (while (and (cdr l) (not (,test ,node (cadr l))))
+		 (setq l (cdr l)))
+	       ;; if at the end, append node to tail
+	       (rplacd l (cons ,node (cdr l)))
+	       ,node-list)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? (astar-backtrack <node>)
+;; return the path from start node to
+;; node <node>. Function <astar> must have been
+;; called on the graph containing <node>
+;; for this to return a meaningful result.
+(de astar-backtrack (n)
+  (let ((r ())) (do-while :n:ancestor (setq r (cons n r)) (setq n :n:ancestor)) r))
+
+
+  
+#? (astar <start-node> <end-node>)
+;; Runs the A* algorithm to find the shortest path
+;; from <start-node> <end-node> in a graph that
+;; contains those two nodes.
+;; This assumes the <status> of all nodes has 
+;; been set to @@UNTOUCHED (=0) prior to the call.
+;; Nodes that are marked as @@CLOSED prior to
+;; the call will not be examined, and their
+;; cost will assumed to be correct.
+(de astar (start-node end-node &optional (lb-param 1.0) (callback ()))
+  (let ((open-list (list start-node))
+	(closed-list ())
+	(res ()))
+    ;; put start node on open-list with cost 0
+    (setq :start-node:status @@OPEN)
+    (setq :start-node:cost-to 0)
+    (setq :start-node:ancestor ())
+    (==> start-node lower-bound end-node lb-param)
+    (while open-list
+      ;; (pause "1")
+      (let* ((n (get-cheapest-node open-list)))
+	(when callback (callback n))
+	(push closed-list n)
+	(setq :n:status @@CLOSED)
+	;; (pause "2")
+	(if (== n end-node)
+	    (progn
+	      ;; if node is goal, terminate
+	      (setq open-list ())
+	      (setq res n))
+	  (let* ((slist (==> n get-children)))
+	    ;; set the cost each child node
+	    (each (( (child cost) slist))
+	      ;; (pretty child)
+	      (let ((child-cost (+ :n:cost-to cost)))
+		(cond
+		 ((= @@CLOSED :child:status)
+		  (when (< child-cost :child:cost-to)
+		    (setq :child:cost-to child-cost)
+		    (setq :child:ancestor n)))
+		 ((= @@OPEN :child:status)
+		  (when (< child-cost :child:cost-to)
+		    (setq :child:cost-to child-cost)
+		    (setq :child:ancestor n)))
+		 (t (setq open-list (cons child open-list))
+		    (==> child lower-bound end-node lb-param)
+		    (setq :child:status @@OPEN)
+		    (setq :child:cost-to child-cost)
+		    (setq :child:ancestor n)))))))
+	;; (pause "3")
+	))
+    (when res (astar-backtrack res))))
+

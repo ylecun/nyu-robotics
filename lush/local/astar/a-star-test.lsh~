@@ -1,0 +1,137 @@
+
+(libload "../../train/mapgen/mapedit.lsh")
+(libload "a-star.lsh")
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; grid-map class
+(defclass grid-map object
+  grid
+  )
+
+(defmethod grid-map display (x y zoom &optional ny nx)
+  (graphics-batch
+   (let* ((rows (idx-dim grid 0))
+	  (cols (idx-dim grid 1))
+	  (m (matrix rows cols 3)))
+     (idx-bloop ((m m) (g grid))
+       (idx-bloop ((m m) (g g))
+	 (when :(g):cost-to (m 0 :(g):cost-to))
+	 (m 1 :(g):status)
+	 (m 2 :(g):cost)))
+     (let ((m0 (select m 2 0) )
+	   (m1 (select m 2 1) )
+	   (m2 (select m 2 2) ))
+       (gray-draw-matrix x y m2 ((idx-inf m2)) (+ 1e-6 ((idx-sup m2))) zoom zoom)
+       (incr x (+ 2 (* zoom (idx-dim m2 1))))
+       (gray-draw-matrix x y m0 ((idx-inf m0)) (* 1.2 (+ rows cols)) zoom zoom)
+       (incr x (+ 2 (* zoom (idx-dim m0 1))))
+       (gray-draw-matrix x y m1 -1.1 1.1 zoom zoom)
+       (when (and ny nx)
+	 (color-rgb 1 0 0)
+	 (fill-rect (+ x (* *zoom* :c:y)) (+ y (* *zoom* :c:x)) *zoom* *zoom*))
+       ))))
+
+(defmethod grid-map grid-map (cmap)
+  (let ((rows (idx-dim cmap 0))
+	(cols (idx-dim cmap 1)))
+  (setq grid (array rows cols))
+  (for (i 0 (1- rows))
+       (for (j 0 (1- cols))
+	    (grid i j (new 2dmap-node i j (* 1000 (cmap i j))))))
+  (for (i 0 (1- (idx-dim grid 0)))
+       (for (j 0 (1- (idx-dim grid 1)))
+	    (let ((n (grid i j)))
+	      (setq :n:children
+		    (cond 
+		     ((and (= 0 i) (= 0 j))
+		      (list (grid (1+ i) (1+ j))
+			    (grid (1+ i) j) 
+			    (grid i (1+ j))))
+		     ((and (= 0 i) (= (1- cols) j))
+		      (list (grid (1+ i) j) 
+			    (grid (1+ i) (1- j))
+			    (grid i (1- j)) ))
+		     ((and (= (1- rows) i) (= 0 j))
+		      (list (grid i (1+ j)) 
+			    (grid (1- i) (1+ j)) 
+			    (grid (1- i) j)))
+		     ((and (= (1- rows) i) (= (1- cols) j))
+		      (list (grid i (1- j)) 
+			    (grid (1- i) j) 
+			    (grid (1- i) (1- j)) ))
+		     ((= 0 i)
+		      (list (grid (1+ i) (1+ j))
+			    (grid (1+ i) j) 
+			    (grid (1+ i) (1- j))
+			    (grid i (1+ j)) 
+			    (grid i (1- j))))
+		     ((= 0 j)
+		      (list (grid (1+ i) (1+ j))
+			    (grid (1+ i) j) 
+			    (grid i (1+ j)) 
+			    (grid (1- i) (1+ j)) 
+			    (grid (1- i) j) ))
+		     ((= (1- rows) i)
+		      (list (grid i (1+ j)) 
+			    (grid i (1- j)) 
+			    (grid (1- i) (1+ j)) 
+			    (grid (1- i) j) 
+			    (grid (1- i) (1- j)) ))
+		     ((= (1- cols) j)
+		      (list (grid (1+ i) j) 
+			    (grid (1+ i) (1- j))
+			    (grid i (1- j)) 
+			    (grid (1- i) j) 
+			    (grid (1- i) (1- j)) ))
+		     (t 		    
+		      (list (grid (1+ i) (1+ j))
+			    (grid (1+ i) j) 
+			    (grid (1+ i) (1- j))
+			    (grid i (1+ j)) 
+			    (grid i (1- j)) 
+			    (grid (1- i) (1+ j)) 
+			    (grid (1- i) j) 
+			    (grid (1- i) (1- j)) )))))))))
+  
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defclass costmap object mapdata save-flag)
+(defmethod costmap costmap (rows cols) 
+  (setq mapdata (matrix 1 rows cols))
+  (setq save-flag ()))
+
+(setq *zoom* 1)
+
+(de astar-init (rows cols &optional (zoom ()))
+  (if zoom (setq *zoom* zoom) (setq *zoom* (max 1 (int (/ 300 rows)))))
+  (setq cmap (new costmap rows cols))
+  (new costmap-editor cmap *zoom*))
+
+
+;; first parameter is the "greediness" parameter,
+;; the second is for display.
+(de astar-run (&optional (lb-param 1.0) (*debug* ()))
+  (when (not window) (new-window 0 0 912 308 "A*"))
+  (setq gm (new grid-map (select :cmap:mapdata 0 0)))
+  (let ((grid :gm:grid))
+    (setq timing 
+	  (time 
+	   (setq best-path 
+		 (astar (grid 0 0) 
+			(grid (1- (idx-dim grid 0)) (1- (idx-dim grid 1)))
+			lb-param
+			(lambda (c) 
+			  (when *debug* 
+			    (==> gm display 0 0 *zoom* :c:y :c:x))))))))
+  (printf "elapsed time: %g seconds\n" timing)
+  (==> gm display 0 0 *zoom*)
+  (color-rgb 1 0 0)
+  (each ((n best-path))
+    (fill-rect (* *zoom* :n:y) (* *zoom* :n:x) *zoom* *zoom*)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(printf "do (astar-init 50 50), paint non-traversible areas, save\n")
+(printf "then do (astar-run 1.0 t) for normal or (astar-run 3.0 t) for greedy\n")
+
+
+

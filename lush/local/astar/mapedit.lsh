@@ -1,0 +1,296 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; File:      mapedit.lsh
+;;
+;; Brief:     A simple Ogre-based GUI for editing global LAGR 
+;;            cost maps (the first generation simple rectangular
+;;            grid maps).
+;;
+;; Author(s): Urs Muller
+;;
+;; Created:   August 4, 2005
+;; Modified:  August 23, 2005 (um)
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(ogre)
+
+;; defines:
+;; paint abs value
+(defvar inkval 1);;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? ** costmap-editor
+;;.AUTHOR Urs Muller
+;; A simple Ogre-based GUI for editing global LAGR cost maps
+;; (the first generation simple rectangular grid maps).
+(defclass costmap-editor autowindowobject
+  costmap	; The cost map .
+  win		; The window object used to display end edit the cost map.
+  winobj	; Object inside the window.
+  col1		; Sub-object.
+  col2		; Sub-object.
+  maparea	; Sub-object: the map display.
+  btn-thicken	; The "thicken" button.
+  btn-undo	; The undo button.
+  btn-save	; The save button.
+  btn-cancel	; The cancel button.
+  chk-all-pln	; Checkbox: show or don't show all map planes.
+  radio-trav	; Radio buttons: traversible, nontraversible, don't know.
+  rb-trav	; Traversible radio button.
+  rb-nontrav	; Nontraversible radio button.
+  rb-unknown	; Don't know radio button.
+  radio-brush	; Radio buttons: paint brush thickness.
+  rb-1pix
+  rb-3pix
+  rb-5pix
+  rb-10pix
+  rb-20pix
+  rb-rubber
+)
+
+#? (new costmap-editor <cmap> <z>)
+;; Makes a new costmap-eitor object.
+;; <cmap>: The cost map object to be edited.
+;; <z>: The zoom factor (must be an integer value).
+(defmethod costmap-editor costmap-editor (cmap z)
+  (setq costmap cmap)
+  (setq chk-all-pln ())
+  ;; Define window elements
+  (setq maparea (new map-image this z))
+  (setq btn-thicken (new stdbutton "Thicken"
+			 (eval `(lambda(c) (==> :,this:maparea thicken))) ))
+  (setq btn-undo (new stdbutton "Undo"
+		      (eval `(lambda(c) (==> :,this:maparea undo))) ))
+  (setq btn-save (new stdbutton "Save"
+		      (eval `(lambda(c) (setq :,this:costmap:save-flag t)
+				    (delete ,this) )) ))
+  (setq btn-cancel (new stdbutton "Cancel"
+		      (eval `(lambda(c) (delete ,this))) ))
+  (setq chk-all-pln (new checkbox "Show all planes"
+			 (eval `(lambda(c) (==> :,this:maparea expose))) ))
+
+  (setq rb-trav (new radiobutton "Traversible"))
+  (setq rb-nontrav (new radiobutton "Not traversible"))
+  (setq rb-unknown (new radiobutton "Don't know"))
+  (setq radio-trav (new column rb-trav rb-nontrav rb-unknown))
+  (==> rb-trav setdata t)
+
+  (setq rb-1pix (new radiobutton "1 Pixel"))
+  (setq rb-3pix (new radiobutton "3 Pixel"))
+  (setq rb-5pix (new radiobutton "5 Pixel"))
+  (setq rb-10pix (new radiobutton "10 Pixel"))
+  (setq rb-20pix (new radiobutton "20 Pixel"))
+  (setq rb-rubber (new radiobutton "Rubber box"))
+  (setq radio-brush (new column rb-1pix rb-3pix rb-5pix rb-10pix rb-20pix
+			 rb-rubber))
+  (==> rb-1pix setdata t)
+
+  (setq col1 (new column maparea
+		  (new row (new column btn-thicken btn-save)
+		           (new column btn-undo btn-cancel) )))
+  (setq col2 (new column
+		  (new string (sprintf "Zoom: x%d" z))
+		  chk-all-pln
+		  (new EmptySpace 1 10)
+		  (new string "Paint type")
+		  radio-trav
+		  (new EmptySpace 1 10)
+		  (new string "Paint brush size")
+		  radio-brush ))
+  (setq winobj (new row col1 col2))
+  ;; End of window element definitions
+  (setq win (new autowindowobject 10 10 () () "Cost Map Editor" winobj))
+  (setq :costmap:save-flag ())
+)
+
+(defmethod costmap-editor -destructor ()
+  (delete win) )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defclass map-image VisualObject
+  editor
+  mapdata
+  undobuf	; The undo buffer.
+  paintval	; -1.0=traversible, 1.0=nontraversible, 0.0=don't know.
+  dotsize	; Diameter of dot to paint in pixels (1, 3, or 5).
+  zoom		; Zoom factor (must be an integer).
+  )
+
+(defmethod map-image map-image(ed z)
+  (setq zoom z)
+  (setq editor ed)
+  (setq mapdata :ed:costmap:mapdata)
+  (setq undobuf (idx-copy (select mapdata 0 0))) )
+
+(defmethod map-image gettext() mapdata)
+
+(defmethod map-image settext(mat)
+  (setq mapdata mat)
+  (when window
+	(==> this compute-geometry)
+	(==> this expose rect) ) )
+
+(defmethod map-image compute-geometry()
+  (==> this resize (* (idx-dim mapdata 2) zoom) (* (idx-dim mapdata 1) zoom))
+  rect )
+
+(defmethod map-image repaint()
+  (let (((x y w h) rect)
+	((cx cy cw ch) (clip))
+	(mat (idx-copy (select mapdata 0 0)))
+	(tmpmat (idx-copy (select mapdata 0 0)))
+	)
+    (setq cw (min cw (idx-dim mat 1)))
+    (setq ch (min ch (idx-dim mat 0)))
+    (when (==> :editor:chk-all-pln getdata)
+      ;; we want to see and confirm when we alter data, so we review the
+      ;; total cost map as will be used for data generation
+	(for (i 0 (1- (idx-dim mapdata 0)))
+	     (idx-d2dotc (select mapdata 0 i) (:editor:costmap:weightvec i)
+			 tmpmat)
+	 (idx-add mat  tmpmat mat)
+	)
+     )
+      ;(setq mat (idx-copy (select mapdata 0 0)))
+      ;(for (k 1 (- (idx-dim mapdata 0) 1))
+	;   (for (j 0 (- (idx-dim mapdata 1) 1))
+		;(for (i 0 (- (idx-dim mapdata 2) 1))
+		 ;    (when (<> (mapdata k j i) 0.0)
+		  ;     (mat j i (mapdata k j i)) )))))
+    (gray-draw-matrix 
+     cx cy (narrow (narrow mat 1 cw (- cx x)) 0 ch (- cy y))
+     -1.0 1.0 zoom zoom )))
+
+(defmethod map-image set-paintval ()
+  (if (==> :editor:rb-trav getdata)
+      (setq paintval (- inkval))
+    (if (==> :editor:rb-nontrav getdata)
+	(setq paintval inkval)
+      (setq paintval 0.0) ))
+  () )
+
+(defmethod map-image set-dotsize ()
+  (if (==> :editor:rb-rubber getdata)
+      (setq dotsize 0)				;; rubber box
+    (if (==> :editor:rb-20pix getdata)
+	(setq dotsize 20)
+      (if (==> :editor:rb-10pix getdata)
+	  (setq dotsize 10)
+	(if (==> :editor:rb-5pix getdata)
+	    (setq dotsize 5)
+	  (if (==> :editor:rb-3pix getdata)
+	      (setq dotsize 3)
+	    (setq dotsize 1) )))))
+  () )
+
+(defmethod map-image mouse-down(x1 y1)
+  (idx-copy (select mapdata 0 0) undobuf)
+  (==> this set-paintval)
+  (==> this set-dotsize)
+  (when (> :this:dotsize 0)
+    (let (((x y w h) rect))
+      (==> this setdot (/ (- y1 y) zoom) (/ (- x1 x) zoom) paintval dotsize)
+      (==> this expose) ))
+  (==> :editor:btn-undo settext "Undo")
+  () )
+
+(defmethod map-image mouse-drag(x1 y1 x2 y2)
+  (if (= :this:dotsize 0)
+      (hilite hilite-rect x1 y1 x2 y2)
+    (let (((x y w h) rect))
+      (==> this setdot (/ (- y2 y) zoom) (/ (- x2 x) zoom) paintval dotsize)
+      (==> this expose) ))
+  () )
+
+(defmethod map-image mouse-up(x1 y1 x2 y2)
+  (when (= :this:dotsize 0)
+    (let (((x y w h) rect))
+      (==> this fillrect (/ (- y1 y) zoom) (/ (- x1 x) zoom) (/ (- y2 y) zoom)
+	   (/ (- x2 x) zoom) paintval)
+      (==> this expose) ))
+  () )
+
+(defmethod map-image get-selected ()
+  () )
+
+(defmethod map-image undo ()
+  (let ((tmpbuf (idx-copy undobuf)))
+    (idx-copy (select mapdata 0 0) undobuf)
+    (idx-copy tmpbuf (select mapdata 0 0))
+    (==> this expose) )
+  (==> :editor:btn-undo settext
+       (selectq (==> :editor:btn-undo gettext)
+	 ("Undo" "Redo")
+	 (t "Undo") ))
+  () )
+
+(defmethod map-image fillrect (row1 col1 row2 col2 paintval)
+  (when (> row1 row2)
+    (let ((tmp row1))
+      (setq row1 row2)
+      (setq row2 tmp) ))
+  (when (> col1 col2)
+    (let ((tmp col1))
+      (setq col1 col2)
+      (setq col2 tmp) ))
+  (for (j row1 row2)
+       (for (i col1 col2)
+	    (==> this setpix j i paintval) )))
+
+(defmethod map-image setdot (row col paintval dotsize)
+  (if (<= dotsize 1)
+      (==> this setpix row col paintval)
+    (for (j (- (/ dotsize 2)) (/ dotsize 2))
+	 (for (i (- (/ dotsize 2)) (/ dotsize 2))
+	      (when (or (< (abs j) (/ dotsize 2))
+			(< (abs i) (/ dotsize 2)) )
+		(==> this setpix (+ row j) (+ col i) paintval) ))))
+  )
+
+(defmethod map-image setpix (row col paintval)
+  (when (and (>= row 0) (< row (idx-dim mapdata 1))
+	     (>= col 0) (< col (idx-dim mapdata 2)) )
+    (mapdata 0 row col paintval) ))
+
+(defmethod map-image thicken ()
+  (idx-copy (select mapdata 0 0) undobuf)
+  (==> this set-paintval)
+  (==> this set-dotsize)
+  (when (< dotsize 3) (setq dotsize 3))
+  (for (j 0 (- (idx-dim mapdata 1) 1))
+       (for (i 0 (- (idx-dim mapdata 2) 1))
+	    (when (= (undobuf j i) paintval)
+	      (==> this setdot j i paintval dotsize) )))
+  (==> this expose)
+  (==> :editor:btn-undo settext "Undo")
+  () )
+
+
+(defmethod map-image -destructor ()
+  (delete editor) )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Debug and test code
+
+;(defclass costmap object
+; ((-idx3- (-double-)) mapdata)
+; ((-int-) save-flag)
+; )
+
+;(defmethod costmap costmap ()
+;  (setq mapdata (double-matrix 5 70 70))
+;  (setq save-flag ())
+;  )
+
+;(setq cmap (new costmap))
+
+;; You can manually execute the next line multiple times from
+;; the Lush shell to confirm that the edited map data is preserved
+;; between calls to the GUI map editor.
+;(wait (new costmap-editor cmap 4))
+
+;(if (= :cmap:save-flag t)
+;    (printf "You have clicked on Save\n")
+;  (printf "You have clicked on Cancel\n") )

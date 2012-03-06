@@ -1,0 +1,905 @@
+(libload "libc/constants")
+(libload "bresenham")
+
+;; This is a heuristic robot path finding algorithm that 
+;; incrementally builds the maps as the robot moves around
+;; and senses its environment.
+;; 
+;; The sensing is performed by casting rays in all directions from 
+;; the current location at a given distance.
+;; 
+;; Rays can hit an obstacle, can see a left or right edge of an 
+;; obstacle, can terminate on a traversible area, or
+;; can terminate on a previously cast ray.
+;; 
+;; A tree of potential waypoint is dynamically generated 
+;; by collecting:
+;; - endpoint of rays that do not terminate on an obstacle or
+;;   or on a previous ray
+;; - "obstacle edge" points on rays that are significantly
+;;   larger then one of their neighboring rays.
+;;   (indicating the edge of an obstacle).
+;;
+;; Candidate successor points are "rated" according to their likelihood
+;; of taking us to the goal. The rating is based on the following
+;; criteria:
+;; - if the point takes us to the goal, we take it
+;; - Among all candidate points, we take the one with the best VMG
+;;   and follow it.
+;; - if we arrive at a point with no candidate, we backup
+;;   in the graph until we find a non-explored candidate.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defconstant "pi" 3.1415927)
+(de deg2rad (x) (* 0.01745329278 x))
+(de rad2deg (x) (* 57.29577867 x))
+
+#? (edistance <x1> <y1> <x2> <y2>)
+;; return Euclidean distance between <x1,y1>
+;; and <x2,y2>. 
+(de edistance (x1 y1 x2 y2)
+  (let ((dx (- x2 x1)) (dy (- y2 y1)))
+    (sqrt (+ (* dx dx) (* dy dy)))))
+
+;; return heading from 0 to 2pi corresponding to a vector. 0 degree is
+;; the x axis, y goes to the right, angles are clockwise.
+(de compute-heading (dx dy)
+  (if (> (abs dx) (abs dy))
+      (if (> dx 0) (atan (/ dy dx)) (+ @@pi (/ dy dx)))
+    (if (> dy 0) 
+	(- (* 0.5 @@pi) (atan (/ dx dy)))
+      (- (* 1.5 @@pi) (atan (/ dx dy))))))
+
+(de compute-heading (dx dy)
+  (if (and (= dx 0) (= dy 0)) 
+      0
+    (if (> (abs dx) (abs dy))
+	(if (> dx 0) (atan (/ dy dx)) (+ @@pi (/ dy dx)))
+      (if (> dy 0) 
+	  (- (* 0.5 @@pi) (atan (/ dx dy)))
+	(- (* 1.5 @@pi) (atan (/ dx dy)))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; return a list of potential waypoints from location
+;; x,y in cost map p. Rays are cast at all angles
+;; at distance maxd.
+;; This returns a list of new nodes
+;; p: cost map
+;; m: map of already drawn rays.
+;; v: id of rays. rays will terminate at any value in m different from v.
+;; x,y: current position
+;; maxd: max distance for ray-casting
+;; tx,ty: coordinates of goal.
+;; robot-width: width of the robot in cell units 
+;; (to determine the angular step between rays we cast).
+;; The goal area is supposed to be marked by values
+;; of -2 in the map, and unknown values by -1.
+;; rays will terminate at all values that are negative,
+;; larger than @@LETHAL, or different from value v in
+;; the ray map m.
+
+
+;; cast a bunch of rays so that the distance between endpoints
+;; of two ray of the same length is roughly width-multiplier*robot-width.
+(de cast-rays (p m v x y maxd robot-width heading)
+  (let* ((width-multiplier 0.9)		; separation between rays
+	 (maxdelta (/ @@pi 16))		; max angle between rays
+	 ;; smallest angles between rays = apparent angle of width of robot at distance maxd
+	 (delta (min maxdelta (* width-multiplier (asin (/ robot-width maxd))))) 
+	 ;; max number of rays
+	 (n (int (/ (* 2 @@pi) delta)))
+	 ;; will hold endpoint and end value of all rays
+	 (xyvvs (int-matrix (1+ n) 4))
+	 ;; will old all angles
+	 (as (float-matrix (1+ n)))
+	 ;; rounded intereger coordinates
+	 (xint (int (+ x 0.5)))
+	 (yint (int (+ y 0.5)))
+	 (bearing 0)
+	 (i 0))
+    ;; first create a ray in the direction of the goal, and at
+    ;; an angle of delta on either side of it. Put the 
+    ;; the ray toward the goal into index 1.
+    (setq bearing (- heading delta))
+    (as i bearing) (ray-cast p m v xint yint (as i) maxd (select xyvvs 0 i)) (incr i)
+    (setq bearing heading)
+    (as i bearing) (ray-cast p m v xint yint (as i) maxd (select xyvvs 0 i)) (incr i)
+    (setq bearing (+ heading delta))
+    (as i bearing) (ray-cast p m v xint yint (as i) maxd (select xyvvs 0 i)) 
+    ;; compute next angle based on apparent angle of robot at end of ray
+    (incr bearing (min maxdelta (* width-multiplier (* 2 (asin (min 1.0 (/ (* 0.5 robot-width) (edistance xint yint (xyvvs i 0) (xyvvs i 1)))))))))
+    (incr i)
+    ;; start from small angles
+    (incr bearing (- (* 2 @@pi)))
+    ;; loop over the full circle.
+    (while (< bearing (- heading delta))
+      ;; (printf "v=%4d bearing=%g\n" v (* bearing (/ 180 @@pi)))
+      (as i bearing) 
+      ;; cast ray
+      (ray-cast p m v xint yint (as i) maxd (select xyvvs 0 i)) 
+      ;; increment angle using apparent angle of robot at end of ray
+      (incr bearing (min maxdelta (* width-multiplier (* 2 (asin (min 1.0 (/ (* 0.5 robot-width) (edistance xint yint (xyvvs i 0) (xyvvs i 1)))))))))
+      (incr i))
+    ;; copy first ray into last item, so we have circular boundary condition
+    (idx-copy (select xyvvs 0 0) (select xyvvs 0 i))
+    (idx-copy (select as 0 0) (select as 0 i))
+    (setq n i)
+    (setq xyvvs (narrow xyvvs 0 (1+ n) 0))
+    (setq as (narrow as 0 (1+ n) 0))
+    (list xyvvs as)))
+
+(de get-candidate-waypoints-perimeter (p m v x y maxd robot-width tx ty)
+  (let ((heading (compute-heading (- tx x) (- ty y)))
+	(d (edistance tx ty x y))
+	(xyvvs (int-matrix 1 4))
+	(as (float-matrix 1)))
+    (as 0 heading)
+    ;; first, cast a single ray towards the goal.
+    (ray-cast p m v (to-int x) (to-int y) heading d (select xyvvs 0 0))
+    ;; are we near the goal?
+    (if (< (edistance (xyvvs 0 0) (xyvvs 0 1) tx ty) 2)
+	;; if yes: just return the goal
+	(progn
+	  ;; (printf "goal reached\n")
+	  (list (list (list (xyvvs 0 0) (xyvvs 0 1))) xyvvs as))
+      ;; else cast a bunch of rays in all directions
+      ;; (printf "goal not reached\n")
+      (let (( (xyvvs as) (cast-rays p m v x y maxd robot-width heading))
+	    (length-multiplier 2.5)	; distance to clear obstacle
+	    (r ())
+	    (xmax (1- (idx-dim p 1)))
+	    (ymax (1- (idx-dim p 0)))
+	    (n 0))
+	(setq n (1- (idx-dim xyvvs 0)))
+	;; loop over rays, and return those that end on open field 
+	;; (neither an obstacle, nor an border or unknown area, nor a previous ray).
+	(idx-bloop ((xyvv (narrow xyvvs 0 n 1)))
+	  (when (and (< (xyvv 2) @@LETHAL) (= (xyvv 3) 0))
+	    (setq r (cons (list (int (+ 0.5 (xyvv 0))) (int (+ 0.5 (xyvv 1)))) r))
+	    (when (or (< (caar r) 0) (< (cadr (car r)) 0)) (pause "negative waypoint 0"))
+	    ))
+	;; (pause "asd")
+	;; now, detect rays whose immediate neighbor is significantly shorter.
+	;; set several waypoints along that those rays (we are turning a corner, 
+	;; clearing an obstacle).
+	(for (i 0 (1- n))
+	     (let* ((d0 (edistance x y (xyvvs i 0) (xyvvs i 1)))
+		    (d1 (edistance x y (xyvvs (1+ i) 0) (xyvvs (1+ i) 1)))
+		    (diff (- d0 d1)))
+	       ;; (printf "d0=%d, d1=%d, diff=%d, thres=%g\n" d0 d1 diff (* length-multiplier robot-width))
+	       ;; (when (> (abs diff) (* length-multiplier robot-width)) (pause "asd"))
+	       (cond
+		((> diff (* length-multiplier robot-width)) ; left edge
+		 (let ((a (as i))
+		       (d (+ d1 (* 1.0 robot-width)))
+		       (dfar (max 1 (- d0 (* 1.0 robot-width))))
+		       (dmid (* 0.5 (+ d0 d1))))
+		   (let ((px (int (+ 0.5 (+ x (* (cos a) dfar)))))
+			 (py (int (+ 0.5 (+ y (* (sin a) dfar))))))
+		     (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		       (setq r (cons (list px py) r))
+		       ;; (print "left long" (car r))
+		       ))
+		   (let ((px (int (+ 0.5 (+ x (* (cos a) dmid)))))
+			 (py (int (+ 0.5 (+ y (* (sin a) dmid))))))
+		     (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		       (setq r (cons (list px py) r))
+		       ;; (print "left mid" (car r))
+		       ))
+		   (let ((px (int (+ 0.5 (+ x (* (cos a) d)))))
+			 (py (int (+ 0.5 (+ y (* (sin a) d))))))
+		     (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		       (setq r (cons (list px py) r))
+		       ;; (print "left short" (car r))
+		       ))
+		   ))
+		((< diff (* (- length-multiplier) robot-width))	; right edge
+		 (let ((a (as (1+ i)))
+		       (d (+ d0 (* 1.0 robot-width)))
+		       (dfar (max 1 (- d1 (* 1.0 robot-width))))
+		       (dmid (* 0.5 (+ d0 d1))))
+		   (let ((px (int (+ 0.5 (+ x (* (cos a) dfar)))))
+			 (py (int (+ 0.5 (+ y (* (sin a) dfar))))))
+		     (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		       (setq r (cons (list px py) r))
+		       ;; (print "right long" (car r))
+		       ))
+		   (let ((px (int (+ 0.5 (+ x (* (cos a) dmid)))))
+			 (py (int (+ 0.5 (+ y (* (sin a) dmid))))))
+		     (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		       (setq r (cons (list px py) r))
+		       ;; (print "left mid" (car r))
+		       ))
+		   (let ((px (int (+ 0.5 (+ x (* (cos a) d)))))
+			 (py (int (+ 0.5 (+ y (* (sin a) d))))))
+		     (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		       (setq r (cons (list px py) r))
+		       ;; (print "left short" (car r))
+		       ))
+		   ))
+		(t ()))))
+	(list r xyvvs as)))))
+
+
+(de get-candidate-waypoints-dense (p m v x y maxd robot-width tx ty)
+  (let* ((length-multiplier 2.5)	; distance to clear obstacle
+	 (delta (asin (/ 1.0 maxd)))
+	 (heading (compute-heading (- tx x) (- ty y)))
+	 (r ())
+	 (xmax (1- (idx-dim p 1)))
+	 (ymax (1- (idx-dim p 0)))
+	 (n (int (/ (* 2 @@pi) delta)))
+	 (xyvvs (int-matrix (1+ n) 4))
+	 (as (float-matrix (1+ n)))
+	 (i 0))
+    ;; (when (or (< x 0) (< y 0)) (pause "problem"))
+    (idx-bloop ((xyvv (narrow xyvvs 0 n 1)) (a (narrow as 0 n 1)))
+      (a (+ heading (* i delta)))
+      (ray-cast p m v (int (+ x 0.5)) (int (+ 0.5 y)) (a) maxd xyvv)
+      ;; (when (or (< (xyvv 0) 0) (< (xyvv 1) 0)) (printf "negative waypoint: %d %d\n" (xyvv 0) (xyvv 1)))
+      (incr i))
+    (idx-copy (select xyvvs 0 n) (select xyvvs 0 0))
+    (idx-copy (select as 0 n) (select as 0 0))
+    (if (= (xyvvs 1 2) -2)
+	;; if end-point-to-goal is at goal, return it, nothing more.
+	(progn
+	  (printf "goal reached\n")
+	  (setq r (list (list (int (+ 0.5 (xyvvs 1 0))) (int (+ 0.5 (xyvvs 1 1)))))))
+      (idx-bloop ((xyvv (narrow xyvvs 0 n 1)))
+	(when (and (< (xyvv 2) @@LETHAL) (= (xyvv 3) 0))
+	  (setq r (cons (list (int (+ 0.5 (xyvv 0))) (int (+ 0.5 (xyvv 1)))) r))
+	  (when (or (< (caar r) 0) (< (cadr (car r)) 0)) (pause "negative waypoint 0"))
+	  ))
+      ;; add edges
+      (for (i 0 (1- n))
+	   (let* ((d0 (edistance x y (xyvvs i 0) (xyvvs i 1)))
+		  (d1 (edistance x y (xyvvs (1+ i) 0) (xyvvs (1+ i) 1)))
+		  (diff (- d0 d1)))
+	     (cond
+	      ((> diff (* length-multiplier robot-width)) ; left edge
+	       (let ((a (as i))
+		     (d (+ d1 (* 1.0 robot-width)))
+		     (dfar (max 1 (- d0 (* 1.0 robot-width))))
+		     (dmid (* 0.5 (+ d0 d1))))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dfar)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dfar))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left long" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dmid)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dmid))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left mid" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) d)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) d))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left short" (car r))
+		     ))
+		 ))
+	      ((< diff (* (- length-multiplier) robot-width)) ; right edge
+	       (let ((a (as (1+ i)))
+		     (d (+ d0 (* 1.0 robot-width)))
+		     (dfar (max 1 (- d1 (* 1.0 robot-width))))
+		     (dmid (* 0.5 (+ d0 d1))))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dfar)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dfar))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "right long" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dmid)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dmid))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left mid" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) d)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) d))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left short" (car r))
+		     ))
+		 ))
+	      (t ())))))
+
+    (list r xyvvs as)))
+
+(de get-candidate-waypoints-adaptive (p m v x y maxd robot-width tx ty)
+  (let* ((width-multiplier 0.9)		; separation between rays
+	 (length-multiplier 2.5)	; distance to clear obstacle
+	 (maxdelta (/ @@pi 16))		; max angle between rays
+	 ;; smallest angles between rays = apparent angle of width of robot at distance maxd
+	 (delta (min maxdelta (* width-multiplier (asin (/ robot-width maxd))))) 
+	 ;; heading toward goal
+	 (heading (compute-heading (- tx x) (- ty y)))
+	 (r ())
+	 (xmax (1- (idx-dim p 1)))
+	 (ymax (1- (idx-dim p 0)))
+	 ;; max number of rays
+	 (n (int (/ (* 2 @@pi) delta)))
+	 ;; will hold endpoint and end value of all rays
+	 (xyvvs (int-matrix (1+ n) 4))
+	 ;; will old all angles
+	 (as (float-matrix (1+ n)))
+	 ;; rounded intereger coordinates
+	 (xint (int (+ x 0.5)))
+	 (yint (int (+ y 0.5)))
+	 (bearing 0)
+	 (i 0))
+    ;; first create a ray in the direction of the goal, and at
+    ;; an angle of delta on either side of it. Put the 
+    ;; the ray toward the goal into index 1.
+    (setq bearing (- heading delta))
+    (as i bearing) (ray-cast p m v xint yint (as i) maxd (select xyvvs 0 i)) (incr i)
+    (setq bearing heading)
+    (as i bearing) (ray-cast p m v xint yint (as i) maxd (select xyvvs 0 i)) (incr i)
+    (setq bearing (+ heading delta))
+    (as i bearing) (ray-cast p m v xint yint (as i) maxd (select xyvvs 0 i)) 
+    ;; compute next angle based on apparent angle of robot at end of ray
+    (incr bearing (min maxdelta (* width-multiplier (* 2 (asin (min 1.0 (/ (* 0.5 robot-width) (edistance xint yint (xyvvs i 0) (xyvvs i 1)))))))))
+    (incr i)
+    ;; start from small angles
+    (incr bearing (- (* 2 @@pi)))
+    ;; loop over the full circle.
+    (while (< bearing (- heading delta))
+      ;; (printf "v=%4d bearing=%g\n" v (* bearing (/ 180 @@pi)))
+      (as i bearing) 
+      ;; cast ray
+      (ray-cast p m v xint yint (as i) maxd (select xyvvs 0 i)) 
+      ;; increment angle using apparent angle of robot at end of ray
+      (incr bearing (min maxdelta (* width-multiplier (* 2 (asin (min 1.0 (/ (* 0.5 robot-width) (edistance xint yint (xyvvs i 0) (xyvvs i 1)))))))))
+      (incr i))
+    ;; copy first ray into last item, so we have circular boundary condition
+    (idx-copy (select xyvvs 0 0) (select xyvvs 0 i))
+    (idx-copy (select as 0 0) (select as 0 i))
+    (setq n i)
+    (setq xyvvs (narrow xyvvs 0 (1+ n) 0))
+    (setq as (narrow as 0 (1+ n) 0))
+    ;; now generate the candidate waypoints from all the rays.
+    (if (= (xyvvs 1 2) -2)
+	;; if end-point-to-goal is at goal, return it, nothing more.
+	(progn
+	  (printf "goal reached\n")
+	  (setq r (list (list (int (+ 0.5 (xyvvs 1 0))) (int (+ 0.5 (xyvvs 1 1)))))))
+      ;; loop over rays, and return those that end on open field 
+      ;; (neither an obstacle, nor an border or unknown area, nor a previous ray).
+      (idx-bloop ((xyvv (narrow xyvvs 0 n 1)))
+	(when (and (< (xyvv 2) @@LETHAL) (= (xyvv 3) 0))
+	  (setq r (cons (list (int (+ 0.5 (xyvv 0))) (int (+ 0.5 (xyvv 1)))) r))
+	  (when (or (< (caar r) 0) (< (cadr (car r)) 0)) (pause "negative waypoint 0"))
+	  ))
+      ;; now, detect rays whose immediate neighbor is significantly shorter.
+      ;; set several waypoints along that those rays (we are turning a corner, 
+      ;; clearing an obstacle).
+      (for (i 0 (1- n))
+	   (let* ((d0 (edistance x y (xyvvs i 0) (xyvvs i 1)))
+		  (d1 (edistance x y (xyvvs (1+ i) 0) (xyvvs (1+ i) 1)))
+		  (diff (- d0 d1)))
+	     ;; (printf "d0=%d, d1=%d, diff=%d, thres=%g\n" d0 d1 diff (* length-multiplier robot-width))
+	     ;; (when (> (abs diff) (* length-multiplier robot-width)) (pause "asd"))
+	     (cond
+	      ((> diff (* length-multiplier robot-width)) ; left edge
+	       (let ((a (as i))
+		     (d (+ d1 (* 1.0 robot-width)))
+		     (dfar (max 1 (- d0 (* 1.0 robot-width))))
+		     (dmid (* 0.5 (+ d0 d1))))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dfar)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dfar))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left long" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dmid)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dmid))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left mid" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) d)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) d))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left short" (car r))
+		     ))
+		 ))
+	      ((< diff (* (- length-multiplier) robot-width)) ; right edge
+	       (let ((a (as (1+ i)))
+		     (d (+ d0 (* 1.0 robot-width)))
+		     (dfar (max 1 (- d1 (* 1.0 robot-width))))
+		     (dmid (* 0.5 (+ d0 d1))))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dfar)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dfar))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "right long" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dmid)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dmid))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left mid" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) d)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) d))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left short" (car r))
+		     ))
+		 ))
+	      (t ())))))
+
+    (list r xyvvs as)))
+
+(de get-candidate-waypoints-uniform (p m v x y maxd robot-width tx ty)
+  (let* ((width-multiplier 0.9)		; separation between rays
+	 (length-multiplier 2.5)	; distance to clear obstacle
+	 (delta (* width-multiplier (asin (/ robot-width maxd))))
+	 (heading (compute-heading (- tx x) (- ty y)))
+	 (r ())
+	 (xmax (1- (idx-dim p 1)))
+	 (ymax (1- (idx-dim p 0)))
+	 (n (int (/ (* 2 @@pi) delta)))
+	 (xyvvs (int-matrix (1+ n) 4))
+	 (as (float-matrix (1+ n)))
+	 (i 0))
+    ;; (when (or (< x 0) (< y 0)) (pause "problem"))
+    (idx-bloop ((xyvv (narrow xyvvs 0 n 1)) (a (narrow as 0 n 1)))
+      (a (+ heading (* i delta)))
+      (ray-cast p m v (int (+ x 0.5)) (int (+ 0.5 y)) (a) maxd xyvv)
+      ;; (when (or (< (xyvv 0) 0) (< (xyvv 1) 0)) (printf "negative waypoint: %d %d\n" (xyvv 0) (xyvv 1)))
+      (incr i))
+    (idx-copy (select xyvvs 0 n) (select xyvvs 0 0))
+    (idx-copy (select as 0 n) (select as 0 0))
+    (if (= (xyvvs 1 2) -2)
+	;; if end-point-to-goal is at goal, return it, nothing more.
+	(progn
+	  (printf "goal reached\n")
+	  (setq r (list (list (int (+ 0.5 (xyvvs 1 0))) (int (+ 0.5 (xyvvs 1 1)))))))
+      (idx-bloop ((xyvv (narrow xyvvs 0 n 1)))
+	(when (and (< (xyvv 2) @@LETHAL) (= (xyvv 3) 0))
+	  (setq r (cons (list (int (+ 0.5 (xyvv 0))) (int (+ 0.5 (xyvv 1)))) r))
+	  (when (or (< (caar r) 0) (< (cadr (car r)) 0)) (pause "negative waypoint 0"))
+	  ))
+      ;; add edges
+      (for (i 0 (1- n))
+	   (let* ((d0 (edistance x y (xyvvs i 0) (xyvvs i 1)))
+		  (d1 (edistance x y (xyvvs (1+ i) 0) (xyvvs (1+ i) 1)))
+		  (diff (- d0 d1)))
+	     ;; (printf "d0=%d, d1=%d, diff=%d, thres=%g\n" d0 d1 diff (* length-multiplier robot-width))
+	     ;; (when (> (abs diff) (* length-multiplier robot-width)) (pause "asd"))
+	     (cond
+	      ((> diff (* length-multiplier robot-width)) ; left edge
+	       (let ((a (as i))
+		     (d (+ d1 (* 1.0 robot-width)))
+		     (dfar (max 1 (- d0 (* 1.0 robot-width))))
+		     (dmid (* 0.5 (+ d0 d1))))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dfar)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dfar))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left long" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dmid)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dmid))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left mid" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) d)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) d))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left short" (car r))
+		     ))
+		 ))
+	      ((< diff (* (- length-multiplier) robot-width)) ; right edge
+	       (let ((a (as (1+ i)))
+		     (d (+ d0 (* 1.0 robot-width)))
+		     (dfar (max 1 (- d1 (* 1.0 robot-width))))
+		     (dmid (* 0.5 (+ d0 d1))))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dfar)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dfar))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "right long" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) dmid)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) dmid))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left mid" (car r))
+		     ))
+		 (let ((px (int (+ 0.5 (+ x (* (cos a) d)))))
+		       (py (int (+ 0.5 (+ y (* (sin a) d))))))
+		   (when (and (>= px 0) (<= px xmax) (>= py 0) (<= py ymax))
+		     (setq r (cons (list px py) r))
+		     ;; (print "left short" (car r))
+		     ))
+		 ))
+	      (t ())))))
+
+    (list r xyvvs as)))
+
+
+(de get-candidate-waypoints-old (p m v x y maxd robot-width tx ty)
+  (let* ((width-multiplier 0.9)		; separation between rays
+	 (length-multiplier 1.5)	; distance to clear obstacle
+	 (delta (* width-multiplier (asin (/ robot-width maxd))))
+	 (heading (compute-heading (- tx x) (- ty y)))
+	 (r ())
+	 (n (int (/ (* 2 @@pi) delta)))
+	 (xyvvs (int-matrix (1+ n) 4))
+	 (as (float-matrix (1+ n)))
+	 (i 0))
+    (idx-bloop ((xyvv (narrow xyvvs 0 n 1)) (a (narrow as 0 n 1)))
+      (a (+ heading (* i delta)))
+      (ray-cast p m v (int (+ x 0.5)) (int (+ 0.5 y)) (a) maxd xyvv)
+      (incr i))
+    (idx-copy (select xyvvs 0 n) (select xyvvs 0 0))
+    (idx-copy (select as 0 n) (select as 0 0))
+    ;; (pause "asd")
+    (if (= (xyvvs 1 2) -2)
+	;; if end-point-to-goal is at goal, return it, nothing more.
+	(setq r (list (list (int (+ 0.5 (xyvvs 1 0))) (int (+ 0.5 (xyvvs 1 1))))))
+      ;; find point with lowest distance to goal that does not end on an obstacle
+      ;; or on a previously drawn ray
+      (let ((bestvmg 1e9)
+	    (bestvmg-index -1)
+	    (vmg 0))
+	(for (i 1 (1- n))
+	     (when (and 
+		    (< (xyvvs i 2) @@LETHAL)
+		    (= (xyvvs i 3) 0)
+		    (< (setq vmg (edistance (xyvvs i 0) (xyvvs i 1) tx ty)) bestvmg))
+	       (setq bestvmg-index i) (setq bestvmg vmg)))
+	(when (<> -1 bestvmg-index)
+	  (setq r (list (list (int (+ 0.5 (xyvvs bestvmg-index 0))) (int (+ 0.5 (xyvvs bestvmg-index 1))))))))
+      ;; when end-point-to-goal is not obstacle, add as waypoint.
+      ;; (when (< (xyvvs 1 2) @@LETHAL)
+      ;;   (setq r (list (list (int (+ 0.5 (xyvvs 1 0))) (int (+ 0.5 (xyvvs 1 1)))))))
+      (for (i 0 (1- n))
+	   (let* ((d0 (edistance x y (xyvvs i 0) (xyvvs i 1)))
+		  (d1 (edistance x y (xyvvs (1+ i) 0) (xyvvs (1+ i) 1)))
+		  (diff (- d0 d1)))
+	     (cond
+	      ((= (xyvvs i 3) -2) ())	; bumped into previous ray, do nothing.
+	      ((> diff (* length-multiplier robot-width)) ; left edge
+	       (let ((a (as i))
+		     (d (+ d1 (* 1.0 robot-width)))
+		     (dfar (- d0 (* 1.0 robot-width))))
+		 (setq r (cons (list (int (+ 0.5 (+ x (* (cos a) dfar))))
+				     (int (+ 0.5 (+ y (* (sin a) dfar))))) r))
+		 (print "left long" (car r))
+		 (setq r (cons (list (int (+ 0.5 (+ x (* (cos a) d))))
+				     (int (+ 0.5 (+ y (* (sin a) d))))) r))
+		 (print "left short" (car r))
+		 ))
+	      ((< diff (* (- length-multiplier) robot-width)) ; right edge
+	       (let ((a (as (1+ i)))
+		     (d (+ d0 (* 1.0 robot-width)))
+		     (dfar (- d1 (* 1.0 robot-width))))
+		 (setq r (cons (list (int (+ 0.5 (+ x (* (cos a) dfar))))
+				     (int (+ 0.5 (+ y (* (sin a) dfar))))) r))
+		 (print "right long" (car r))
+		 (setq r (cons (list (int (+ 0.5 (+ x (* (cos a) d))))
+				     (int (+ 0.5 (+ y (* (sin a) d))))) r))
+		 (print "right short" (car r))
+		 ))
+	      (t ())))))
+    (list r xyvvs as)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(setq get-candidate-waypoints get-candidate-waypoints-perimeter)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; write value v around the periphery of map p.
+(de frame-map (p v)
+  (let ((imax (1- (idx-dim p 0)))
+	(jmax (1- (idx-dim p 1))))
+    (for (i 0 imax) (p i 0 v) (p i jmax v))
+    (for (j 0 jmax) (p 0 j v) (p imax j v)) ()))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defconstant "OPEN" 1)
+(defconstant "CLOSED" -1)
+(defconstant "UNTOUCHED" 0)
+
+
+(defclass waypoint-node object
+  id
+  ;; cost of minimum path to get here
+  cost-to 
+  ;; lower bound of path to get to goal
+  cost-from
+  ;; 0: untouched, 1 open, -1 closed.
+  status
+  ancestor
+  x y cost
+  children
+  rays 
+  angles)
+
+
+(defmethod waypoint-node waypoint-node (xx yy c i)
+  (setq x xx) (setq y yy) (setq cost c) (setq status 0) (setq id i))
+
+(defmethod waypoint-node lower-bound (tx ty lb-param)
+  (setq cost-from (* lb-param (edistance x y tx ty))))
+
+#? (==> <waypoint-node> get-children)
+;; return a list of pairs 
+;; <((node1 cost1) (node2 cost2)....)>
+;; where <node1...> are all the children of the current 
+;; node in the graph, and <cost1...> are the cost
+;; taking the transition to the child and passing
+;; through it.
+(defmethod waypoint-node get-children (p m maxd robot-width end-x endy)
+  (let ((cid id)
+	(candidates (get-candidate-waypoints p m id x y maxd robot-width end-x end-y)))
+    ;; (print (car candidates))
+    ;; (setq children
+    (all ((nxny (car candidates)))
+      (when (or (< (car nxny) 0) (< (cadr nxny) 0)) (pause "problem2"))
+      (let ((n (new waypoint-node (car nxny) (cadr nxny) 0 (incr cid))))
+	(list n (+ (edistance :n:x :n:y x y) :n:cost))))
+    ;;)
+    ))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? * astar utility functions
+
+
+#? (push <listsymbol> <element>)
+;; macro to push an element on a list in symbol <symblist>. 
+;; equivalent to <(setq listsymbol (cons element listsymbol))>.
+(dmd push (l x) `(setq ,l (cons ,x ,l)))
+
+#? (pop <listsymbol>)
+;; pop the first element from the list in 
+;; <listsymbol> and return it.
+(dmd pop (l) `(prog1 (car ,l) (setq ,l (cdr ,l))))
+
+#? (get-cheapest-node <listsymbol>)
+;; macro that physically removes the smallest 
+;; element from the list contained in symbol
+;; <listsymbol>, and returns it.
+;; This is used to extract candidate nodes from the
+;; OPEN list, but should really be implemented as a heap.
+(dmd get-cheapest-node (l ln)
+  `(let* ((n ()) (c (+ :(car ,l):cost-to :(car ,l):cost-from)) (ll ,l))
+     (while (cdr ll)
+       (let* ((x (cadr ll))
+	      (xc (+ :x:cost-to :x:cost-from)))
+	 ;; (print x xc n c)
+	 (when (< xc c) (setq n ll) (setq c xc)))
+       (setq ll (cdr ll)))
+     (if (not n)
+	 (prog1
+	     (car ,l)
+	   (setq ,l (cdr ,l)))
+       (prog1
+	   (cadr n)
+	 (rplacd n (cddr n))))))
+
+(dmd get-cheapest-node-weird (l ln)
+  `(let* ((nn (car ,l)) (n ()) (c (+ (edistance :,ln:x :,ln:y :nn:x :nn:y) :(car ,l):cost-from)) (ll ,l))
+     (while (cdr ll)
+       (let* ((x (cadr ll))
+	      (xc (+ (edistance :,ln:x :,ln:y :x:x :x:y) :x:cost-from)))
+	 ;; (print x xc n c)
+	 (when (< xc c) (setq n ll) (setq c xc)))
+       (setq ll (cdr ll)))
+     (if (not n)
+	 (prog1
+	     (car ,l)
+	   (setq ,l (cdr ,l)))
+       (prog1
+	   (cadr n)
+	 (rplacd n (cddr n))))))
+
+
+
+(dmd get-cheapest-node-debug (l)
+  `(let* ((n ()) (c (+ :(car ,l):cost-to :(car ,l):cost-from)) (ll ,l) (i 0))
+     (printf "--------------------\n")
+     (while (cdr ll)
+       (let* ((x (cadr ll))
+	      (xc (+ :x:cost-to :x:cost-from)))
+	 (printf "%4d (%3d,%3d) %g" i :x:x :x:y xc)
+	 (when (< xc c) (printf " * old=%g new=%g" c xc) (setq n ll) (setq c xc)))
+       (printf "\n")
+       (incr i)
+       (setq ll (cdr ll)))
+     (if (not n)
+	 (prog1
+	     (car ,l)
+	   (setq ,l (cdr ,l)))
+       (prog1
+	   (cadr n)
+	 (rplacd n (cddr n))))))
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? (astar-backtrack <node>)
+;; return the path from start node to
+;; node <node>. Function <astar> must have been
+;; called on the graph containing <node>
+;; for this to return a meaningful result.
+(de astar-backtrack (n)
+  (let ((r (list n))) (while :n:ancestor (setq r (cons :n:ancestor r)) (setq n :n:ancestor)) r))
+
+
+  
+#? (astar <start-node> <end-node>)
+;; Runs the A* algorithm to find the shortest path
+;; from <start-node> <end-node> in a graph that
+;; contains those two nodes.
+;; This assumes the <status> of all nodes has 
+;; been set to @@UNTOUCHED (=0) prior to the call.
+;; Nodes that are marked as @@CLOSED prior to
+;; the call will not be examined, and their
+;; cost will assumed to be correct.
+(de astar (p m maxd robot-width start-x start-y end-x end-y &optional (lb-param 1.0) (callback ()))
+  (let* ((start-node (new waypoint-node start-x start-y 0 (1+ @@LETHAL)))
+	 (open-list (list start-node))
+	 (closed-list ())
+	 (last-node start-node)
+	 (stop ())
+	 (nnode 0)			; number of node explored
+	 (total-nodes 1)		; number of nodes created
+	 (res ()))
+    ;; put a lethal obstacle all around the map
+    ;; (frame-map p @@LETHAL)
+    ;; put start node on open-list with cost 0
+    (setq :start-node:status @@OPEN)
+    (setq :start-node:cost-to 0)
+    (setq :start-node:ancestor ())
+    (==> start-node lower-bound end-x end-y lb-param)
+    (while (and (not stop) open-list)
+      (let* ((n (get-cheapest-node open-list last-node)))
+	;; (when callback (callback p n open-list closed-list))
+	(incr nnode)
+	(push closed-list n)
+	(setq :n:status @@CLOSED)
+	;; (pause "2")
+	(if (<= (edistance :n:x :n:y end-x end-y) 2)
+	    (progn
+	      ;; if node is goal, terminate
+	      ;; (printf "that's all folks\n")
+	      (setq stop t)
+	      (setq res n))
+	  (let* ((slist (==> n get-children p m maxd robot-width end-x end-y)))
+	    ;; (print slist)
+	    ;; set the cost each child node
+	    (each (( (child cost) slist))
+	      (incr total-nodes)
+	      ;; (pretty child)
+	      (let ((child-cost (+ :n:cost-to cost)))
+		(cond
+		 ((= @@CLOSED :child:status)
+		  ;; (printf "closed\n")
+		  (when (< child-cost :child:cost-to)
+		    (setq :child:cost-to child-cost)
+		    (setq :child:ancestor n)))
+		 ((= @@OPEN :child:status)
+		  ;; (printf "open\n")
+		  (when (< child-cost :child:cost-to)
+		    (setq :child:cost-to child-cost)
+		    (setq :child:ancestor n)))
+		 (t (setq open-list (cons child open-list))
+		    ;; (printf "new\n")
+		    (==> child lower-bound end-x end-y lb-param)
+		    (setq :child:status @@OPEN)
+		    (setq :child:cost-to child-cost)
+		    (setq :child:ancestor n)))))
+	    (when callback (callback p m n slist open-list closed-list))))
+	(setq last-node n)
+	;; (pause "3")
+	))
+    (printf "explored nodes: %d\n" nnode)
+    (prog1
+	(when res
+	  (all ((n (astar-backtrack res)))
+	    (list :n:x :n:y)))
+      (let ((ncl (length closed-list))
+	    (nol (length open-list)))
+        (printf "total nodes ceated: %d\n" total-nodes)
+	(printf "closed-list: %d, open-list: %d, total=%d\n" ncl nol (+ ncl nol))
+	(each ((n closed-list)) (delete n))
+	(each ((n open-list)) (delete n))))))
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(dmd stack-pop (stk) `(prog1 (car ,stk) (setq ,stk (cdr ,stk))))
+
+(dmd stack-push (stk v) `(setq ,stk (cons ,v ,stk)))
+
+#? depth-first
+;; Runs a depth first tree search algorithm
+;; for path finding in an unknown map
+;; with limited-range sensors.
+;; from <start-node> <end-node> in a graph that
+;; contains those two nodes.
+;; This assumes the <status> of all nodes has 
+;; been set to @@UNTOUCHED (=0) prior to the call.
+;; Nodes that are marked as @@CLOSED prior to
+;; the call will not be examined, and their
+;; cost will assumed to be correct.
+(de depth-first (p m maxd robot-width start-node end-node &optional (lb-param 1.0) (callback ()))
+  (let ((stack (list start-node))
+	(last-node start-node)
+	(closed-list ())
+	(res ()))
+    (setq :start-node:status @@OPEN)
+    (setq :start-node:cost-to 0)
+    (setq :start-node:ancestor ())
+    (==> start-node lower-bound end-node lb-param)
+    (while stack
+      (let* ((n (stack-pop stack)))
+	;; just for keeping track
+	(stack-push closed-list n)
+	(when (not (= :n:status @@CLOSED))
+	  (if (and (= :n:x :end-node:x) (= :n:y :end-node:y))
+	      (progn (setq stack ()) (setq res n))
+	    (setq :n:status @@CLOSED)
+	    (let ((slist (==> n get-children p m maxd robot-width end-node)))
+	      (each ((c (sort-nodes slist n end-node)))
+		(stack-push stack c)))
+	    (setq last-node n)
+	    (when callback (callback p m n stack closed-list))
+	    ))))
+    (when res (astar-backtrack res))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  
+(de path-display (p m n sl ol cl)
+  (graphics-batch
+   (rgb-draw-matrix 0 0 p)
+   (rgb-draw-matrix (+ 4 (idx-dim p 1)) 0 m)
+   (color-rgb 0 1 0)
+   (each ((c sl))
+     (draw-line :n:x :n:y :(car c):x :(car c):y))
+   (each ((z ol))
+     (fill-rect (- :z:x 2) (- :z:y 2) 4 4))
+   (color-rgb 0 0 0.6)
+   (each ((z cl))
+     (fill-rect (- :z:x 2) (- :z:y 2) 4 4))
+   (color-rgb 1 0 0)
+   (fill-rect (- :n:x 2) (- :n:y 2) 4 4)
+   )
+   ;; (pause "asd")
+  )
+  
+
+;; (test-path-planning-02 "map300-maze.png" 300 6 1 t)
+(de test-path-planning-02 (f &optional (maxd 50) (robot-width 6) (lb-param 1.0) (*debug* ()))
+  (when (not window) (new-window 0 0 912 308 "A*"))
+  (defparameter *zoom* 1)
+  (init-ray-cast f)
+  (rgb-draw-matrix 0 0 p)
+  (setq m (int-matrix (idx-dim p 0) (idx-dim p 1) ))
+  (setq timing 
+	(time 
+	 (setq best-path 
+	       (astar p m maxd robot-width 10 10 290 290 lb-param
+		      (lambda (p m n sl ol cl) (when *debug* (path-display p m n sl ol cl)))))))
+  (printf "elapsed time: %g seconds, used=%d\n" timing (used))
+  (color-rgb 1 0 0)
+  (let ((bp best-path))
+    (while (cdr bp)
+      (draw-line (car (car bp)) (cadr (car bp)) (car (cadr bp)) (cadr (cadr bp)))
+      (setq bp (cdr bp))))
+  bp)
