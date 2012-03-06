@@ -6,12 +6,13 @@
 ;; y = 7cm
 
 (defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.25]])
+;;(defparameter turtlebot-c2v [f [0 0 1 0] [1 0 0 0] [0 1 0 0]])
 
 ;; TODO(reissb) -- 20120228 -- Make this into an object.
-(defparameter feature-map-dim 481)
+(defparameter feature-map-dim 201)
 (defparameter feature-map (float-matrix feature-map-dim feature-map-dim 3))
 (defparameter cost-map (float-matrix feature-map-dim feature-map-dim))
-(defparameter feature-map-scale [f 0.01 0.01])
+(defparameter feature-map-scale [f 0.02 0.02])
 (defparameter feature-map-center-cell [i 0 0])
 (feature-map-center-cell 0 (- feature-map-dim 1))
 (feature-map-center-cell 1 (/ feature-map-dim 2))
@@ -23,25 +24,37 @@
 ;;   [1] - Sum of heights.
 ;;   [2] - Sum of squared heights.
 (de xyz2feature-map (xyz feature-map center-cell scale)
-  (let (
-      (cell-offset [i 0 0])
-      (cell-dst [i 0 0])
-      (map-dim [i 0 0]))
+  (let ((cell-offset [i 0 0])
+        (cell-dst [i 0 0])
+        (map-dim [i 0 0])
+        (xyz-tform (float-matrix (idx-dim xyz 1))))
     (map-dim 0 (idx-dim feature-map 0))
     (map-dim 1 (idx-dim feature-map 1))
     (idx-clear feature-map)
     (idx-bloop ((xyz xyz))
+      ;; Transform to robot world.
+      (idx-m0clear xyz-tform)
+      (idx-bloop ((mat-r turtlebot-c2v)(xyz-tform-c xyz-tform))
+        ;; Apply rotation and scale.
+        (idx-changedim mat-r 0 3)
+        (idx-bloop ((r mat-r)(xyz-c xyz))
+          (xyz-tform-c (+ (xyz-tform-c) (* (r) (xyz-c))))
+          )
+        (idx-changedim mat-r 0 4)
+        ;; Apply translation.
+        (xyz-tform-c (+ (xyz-tform-c) (mat-r 3)))
+        )
       ;; X changes row (in striaght ahead of robot).
-      (cell-offset 0 (* -1 (/ (xyz 0) (scale 0))))
+      (cell-offset 0 (* -1 (/ (xyz-tform 0) (scale 0))))
       ;; Y changes column (right side of robot).
-      (cell-offset 1 (/ (xyz 1) (scale 1)))
+      (cell-offset 1 (/ (xyz-tform 1) (scale 1)))
       ;; Add the offset.
       (idx-copy center-cell cell-dst)
       (idx-add cell-dst cell-offset cell-dst)
       ;; Check cell in bounds.
       (if (and (and (<= 0 (cell-dst 0)) (<= 0 (cell-dst 1)))
                (and (< (cell-dst 0) (map-dim 0)) (< (cell-dst 1) (map-dim 1))))
-        (let ((h (* -1 (xyz 2))))
+        (let ((h (* -1 (xyz-tform 2))))
           ;; Increment count.
           (feature-map (cell-dst 0) (cell-dst 1) 0
             (+ (feature-map (cell-dst 0) (cell-dst 1) 0) 1))
@@ -65,7 +78,7 @@
     (idx-bloop ((cell cell-r) (cost cost-r))
       ;; Store average height.
       (if (not (= 0 (cell 0)))
-        (cost (div (cell 1) (cell 0)))
+        (cost (/ (cell 1) (cell 0)))
         (cost inf-cost)
         )
       )
@@ -74,7 +87,7 @@
   )
 
 (defparameter cost-map-rgb (short-matrix feature-map-dim feature-map-dim 3))
-(defparameter cost-map-max 10)
+(defparameter cost-map-max .5)
 (de depth-cost-frame (tb)
   (==> tb update-stream-camera-depth-image-raw)
   (==> tb update-stream-camera-depth-points)
@@ -84,7 +97,7 @@
     (idx-bloop ((cost cost-r) (cost-rgb cost-rgb-r))
       (if (not (= inf-cost (cost)))
         ;; Shade of gray based on cost in range [-cost-map-max, cost-map-max].
-        (let* ((color (min 255 (max 0 (* (/ (+ cost-map-max (cost))) (* cost-map-max 2)) 255))))
+        (let* ((color (min 255 (max 0 (* (/ (+ cost-map-max (cost)) (* cost-map-max 2)) 255)))))
           (idx-bloop ((rgb cost-rgb))
             (rgb color)
             )
@@ -97,8 +110,7 @@
     )
   (cls)
   (gray-draw-matrix 0 0 :tb:camera-depth-image-raw 0 1023 1 1)
-  ;;(gray-draw-matrix (idx-dim :tb:camera-depth-image-raw 1) 0 cost-map 0 10.0 1 1)
-  (rgb-draw-matrix (idx-dim :tb:camera-depth-image-raw 1) 0 cost-map-rgb)
+  (rgb-draw-matrix (idx-dim :tb:camera-depth-image-raw 1) 0 cost-map-rgb 2 2)
   )
 
 ;;(de drive-simple ()
