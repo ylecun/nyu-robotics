@@ -14,6 +14,7 @@
   ((-idx1- (-int-)) center)
   ((-idx1- (-int-)) full-dim)
   ((-idx1- (-int-)) half-dim)
+  ((-float-) pcl-density)
   ((-int-) features)
   )
 
@@ -31,6 +32,7 @@
   (setq center (idx-mul half-dim [i 2 1]))
   (setq full-dim (idx-add (idx-mul half-dim [i 2 2]) [i 1 1]))
   (setq data (float-matrix (full-dim 0) (full-dim 1) features))
+  (setq pcl-density 0)
   )
 
 #? (==> <feature-map> world2map-cell <world-coord> <cell>)
@@ -68,6 +70,7 @@
   ((-obj- (feature-map)) fm)
   (setq inf-cost 9999)
   (==> this feature-map :fm:half-dim :fm:scale 1)
+  (setq pcl-density :fm:pcl-density)
   )
 
 #? (vec3tformcoord <v> <mat> <res>)
@@ -108,6 +111,9 @@
   (let ((map-cell [i 0 0])               ;; Target cell for xyz point.
         (xyz-tform (float-matrix-nc 3))) ;; Transformed xyz point.
     (idx-clear :fm:data)
+    ;; Compute density.
+    (setq :fm:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
+    (print (concat ":fm:pcl-density " (str :fm:pcl-density)))
     ;; For all point cloud points.
     (idx-bloop ((xyz xyz))
       ;; Transform to robot world.
@@ -139,6 +145,7 @@
 (de feature-map2cost-map (fm cm)
   ((-obj- (feature-map)) fm)
   ((-obj- (cost-map)) cm)
+  (setq :cm:pcl-density :fm:pcl-density)
   (idx-bloop ((cell-r :fm:data) (cost-r :cm:data))
     (idx-bloop ((cell cell-r) (cost cost-r))
       (let ((num (cell 0))
@@ -198,8 +205,8 @@
   (setq vlin-max vlin-max-)
   (setq vang-max vang-max-)
   (setq vlin-cur 0)
-  (setq vang-cur 0)
-  (setq near-check-dim [f 0.45 0.45])
+  (setq vang-cur vang-max)
+  (setq near-check-dim [f 0.55 0.55])
   (setq tb-height 0.5)
   (setq tb-drive-height 0.05)
   ;; Init driving modes. Start by scanning.
@@ -265,24 +272,28 @@
       (torque ((idx-sum row-torques)))
       )
     ;;(pretty near-torques)
-    (if near-collision
+    (print (concat ":cm:pcl-density " (str :cm:pcl-density)))
+    (if (or near-collision (< :cm:pcl-density 0.4))
       ;; Go  right for negative torque, left otherwise.
-      (if (< ((idx-sum near-torques)) 0) @DRIVE_CMD_RIGHT @DRIVE_CMD_LEFT)
+      ;;(if (< ((idx-sum near-torques)) 0) @DRIVE_CMD_RIGHT @DRIVE_CMD_LEFT)
+      (if (< ((idx-sum near-torques)) 0) @DRIVE_CMD_LEFT @DRIVE_CMD_RIGHT)
       ;; No near collision ==> zero.
       @DRIVE_CMD_STRAIGHT
       )
     )
   )
 
-#? (==> <turtlebot-driver-0> drive <cm> <cm-rgb>)
+#? (==> <turtlebot-driver-0> drive <tb> <cm> <cm-rgb>)
 ;; Drive the robot based on the given cost-map <cm>. The RGB image <cm-rgb> is
 ;; used for debug output.
-(defmethod turtlebot-driver-0 drive (cm cm-rgb)
+(defmethod turtlebot-driver-0 drive (tb cm cm-rgb)
+  ((-obj- (turtlebot)) tb)
   ((-obj- (cost-map)) cm)
   ((-idx3- (-int-)) cm-rgb)
   ;; We always check the near obstacle code no matter what since obstcles near
   ;; to the robot are a consistent threat.
-  (let ((near-obstacle-code (==> this check-near-obstacles cm cm-rgb)))
+  (let ((near-obstacle-code (==> this check-near-obstacles cm cm-rgb))
+        (state-before drive-state))
     ;;(print (concat "near-obstacle-code = " (str near-obstacle-code)))
     (cond 
       ((= @DRIVE_STATE_NORMAL drive-state)
@@ -322,9 +333,22 @@
         ()
         )
       )
+    ;; Only move when not changing states.
+    (if (= state-before drive-state)
+      (progn
+        (print (concat "vlin-cur " (str vlin-cur)))
+        (print (concat "vang-cur " (str vang-cur)))
+        (let ((linear [d 0 0 0])(angular [d 0 0 0]))
+          (linear 0 vlin-cur)
+          (angular 2 vang-cur)
+          (print "publish-cmd-vel")
+          (pretty linear)
+          (pretty angular)
+          (==> tb publish-cmd-vel linear angular)
+          )
+        )
+      )
     )
-  (print (concat "vlin-cur " (str vlin-cur)))
-  (print (concat "vang-cur " (str vang-cur)))
   ()
   )
 
@@ -336,12 +360,15 @@
     ;; Initialize streams (no harm to repeat this).
     (==> tb start-sub-camera-depth-image-raw)
     (==> tb start-sub-camera-depth-points)
+    (==> tb start-pub-cmd-vel)
     ;; Create feature, cost, and cost rgb maps.
     (let* ((fm (new feature-map [i 100 100] [f 0.02 0.02] 3))
            (cm (new cost-map fm))
            (cm-rgb (int-matrix (:cm:full-dim 0) (:cm:full-dim 1) 3))
            ;;(driver (new turtlebot-driver-0 tb 0.2 0.5)))
-           (driver (new turtlebot-driver-0 0.2 0.5)))
+           ;;(driver (new turtlebot-driver-0 0.2 0.5)))
+           ;;(driver (new turtlebot-driver-0 0.4 0.8)))
+           (driver (new turtlebot-driver-0 0.4 0.4)))
       ;; Create properly sized window if it doesn't exist.
       (if (not window) (
         let ((wnd-width 0)(wnd-height 0))
@@ -355,13 +382,14 @@
       ;; Do n loops of cost map.
       (for (i 0 n)
         (render-depth-cost-frame tb 0.5 fm cm cm-rgb)
-        (==> driver drive cm cm-rgb)
+        (==> driver drive tb cm cm-rgb)
         ;; Draw cost map again.
         (rgb-draw-matrix (idx-dim :tb:camera-depth-image-raw 1) 0 cm-rgb 2 2)
         )
+      :driver:drive-state
       )
     )
-  ()
+  ;;()
   )
 
 #? (render-depth-cost-frame <tb> <max-ht> <fm> <cm> <cm-rgb>)
@@ -369,8 +397,8 @@
 ;; the cost at which the display is saturated.
 (de render-depth-cost-frame (tb max-cost fm cm cm-rgb)
   ;; Grab new depth data.
-  (==> tb update-camera-depth-image-raw)
-  (==> tb update-camera-depth-points)
+  (while (< (==> tb update-camera-depth-image-raw) 0) ())
+  (while (< (==> tb update-camera-depth-points) 0) ())
   ;; Convert points to feature map.
   (xyz2feature-map :tb:camera-depth-points turtlebot-c2v fm)
   (feature-map2cost-map fm cm)
@@ -438,7 +466,7 @@
   (turtlebot-driver-0
     turtlebot-driver-0
     check-near-obstacles
-    drive
     )
   )
 
+    ;;drive
