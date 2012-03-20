@@ -1,6 +1,12 @@
 (libload "turtlebot/turtlebot")
 (libload "libc/constants")
 
+#? (cpp-dummy)
+;; Load cpp includes.
+(de cpp-dummy ()
+  (cpheader "#include \"turtlebot/turtlebot.h\"")
+  ())
+
 #? turtlebot-c2v
 ;; Transformation from Kinect to Turtlebot base.
 (defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.25]])
@@ -169,7 +175,7 @@
   )
 
 (defclass turtlebot-driver-0 object
-  ;;((-obj- (turtlebot)) tb)
+  ((-obj- (turtlebot)) tb)
   ((-float-) vlin-max) ;; Max linear velocity.
   ((-float-) vang-max) ;; Max angular velocity.
   ((-float-) vlin-cur) ;; Current linear velocity (robot X-axis).
@@ -197,8 +203,8 @@
 #? (new turtlebot-driver-0 <tb> <vlin-max> <vang-max>
 ;; Initialize a turtlebot driver with linear and angular speed limits.
 ;;(defmethod turtlebot-driver-0 turtlebot-driver-0 (tb- vlin-max- vang-max-)
-(defmethod turtlebot-driver-0 turtlebot-driver-0 (vlin-max- vang-max-)
-  ;;((-obj- (turtlebot)) tb-)
+(defmethod turtlebot-driver-0 turtlebot-driver-0 (tb- vlin-max- vang-max-)
+  ((-obj- (turtlebot)) tb-)
   ((-float-) vlin-max-)
   ((-float-) vang-max-)
   ;;(setq tb tb-)
@@ -286,8 +292,7 @@
 #? (==> <turtlebot-driver-0> drive <tb> <cm> <cm-rgb>)
 ;; Drive the robot based on the given cost-map <cm>. The RGB image <cm-rgb> is
 ;; used for debug output.
-(defmethod turtlebot-driver-0 drive (tb cm cm-rgb)
-  ((-obj- (turtlebot)) tb)
+(defmethod turtlebot-driver-0 drive (cm cm-rgb)
   ((-obj- (cost-map)) cm)
   ((-idx3- (-int-)) cm-rgb)
   ;; We always check the near obstacle code no matter what since obstcles near
@@ -342,8 +347,8 @@
           (linear 0 vlin-cur)
           (angular 2 vang-cur)
           (print "publish-cmd-vel")
-          (pretty linear)
-          (pretty angular)
+;;          (pretty linear)
+;;          (pretty angular)
           (==> tb publish-cmd-vel linear angular)
           )
         )
@@ -368,7 +373,7 @@
            ;;(driver (new turtlebot-driver-0 tb 0.2 0.5)))
            ;;(driver (new turtlebot-driver-0 0.2 0.5)))
            ;;(driver (new turtlebot-driver-0 0.4 0.8)))
-           (driver (new turtlebot-driver-0 0.4 0.4)))
+           (driver (new turtlebot-driver-0 tb 0.4 0.4)))
       ;; Create properly sized window if it doesn't exist.
       (if (not window) (
         let ((wnd-width 0)(wnd-height 0))
@@ -451,7 +456,8 @@
   ()
   )
 
-(dhc-make ()
+(dhc-make-with-c++ () ()
+  cpp-dummy
   (feature-map
     feature-map
     world2map-cell
@@ -466,7 +472,7 @@
   (turtlebot-driver-0
     turtlebot-driver-0
     check-near-obstacles
+    drive
     )
   )
 
-    ;;drive
