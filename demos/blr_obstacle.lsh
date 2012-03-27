@@ -9,7 +9,7 @@
 
 #? turtlebot-c2v
 ;; Transformation from Kinect to Turtlebot base.
-(defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.25]])
+(defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.25] [0 0 0 1]])
 
 #? feature-map
 ;; A generic structure used to store feature vectors. Has center and
@@ -56,6 +56,20 @@
   cell
   )
 
+;;#? (==> <feature-map> world2map-cell <cell> <world-coord>)
+;;;; Convert a cell coordinate to world coordinates.
+;;(defmethod feature-map world2map-cell (cell world-coord)
+;;  ((-idx1- (-float-)) world-coord)
+;;  ((-idx1- (-int-)) cell)
+;;  (let ((x-offset (/ (world-coord 1) (scale 0)))
+;;        (y-offset (/ (world-coord 0) (scale 1))))
+;;    (idx-copy center cell)
+;;    (cell 0 (+ (cell 0) (* y-offset -1)))
+;;    (cell 1 (+ (cell 1) x-offset))
+;;    )
+;;  cell
+;;  )
+
 #? (==> <feature-map> in-bounds <cell>)
 ;; Test if cell is within the map area.
 (defmethod feature-map in-bounds (cell)
@@ -64,44 +78,21 @@
        (and (< (cell 0) (full-dim 0)) (< (cell 1) (full-dim 1))))
   )
 
+;; Cost map infinite cost marked where there are no observations.
+(defconstant "COST_MAP_INF_COST" 9999)
+
 #? cost-map
-;; A single float per cell of a related feature-map.
-(defclass cost-map feature-map
-  ((-int-) inf-cost)
-  )
+;; A cost-map is a feature-map with a single value per entry indicating
+;; the cost of the cell in the map.
+(defclass cost-map feature-map)
 
 #? (new cost-map <fm>)
 ;; Construct a cost-map from an existing feature-map <fm>.
 (defmethod cost-map cost-map (fm)
   ((-obj- (feature-map)) fm)
-  (setq inf-cost 9999)
   (==> this feature-map :fm:half-dim :fm:scale 1)
   (setq pcl-density :fm:pcl-density)
-  )
-
-#? (vec3tformcoord <v> <mat> <res>)
-;; Transform 3d vector <v> by the matrix <mat>. This function will ignore
-;; any transformations in homogenous coordinate w.
-(de vec3tformcoord (v mat res)
-  ((-idx1- (-float-)) v)
-  ((-idx2- (-float-)) mat)
-  ((-idx1- (-float-)) res)
-  (let ((rows (idx-dim mat 0)))
-    (idx-changedim mat 0 3)
-    (idx-m0clear res)
-    (idx-pbloop ((mat-r mat)(res-c res))
-      ;; Apply rotation and scale.
-      (idx-changedim mat-r 0 3)
-      (idx-bloop ((mat-rc mat-r)(v-c v))
-        (res-c (+ (res-c) (* (mat-rc) (v-c))))
-        )
-      (idx-changedim mat-r 0 4)
-      ;; Apply translation.
-      (res-c (+ (res-c) (mat-r 3)))
-      )
-    (idx-changedim mat 0 rows)
-    )
-  res
+  this
   )
 
 #?  (xyz2feature-map <xyz> <transform> <fm>)
@@ -115,15 +106,19 @@
   ((-idx2- (-float-)) transform)
   ((-obj- (feature-map)) fm)
   (let ((map-cell [i 0 0])               ;; Target cell for xyz point.
-        (xyz-tform (float-matrix-nc 3))) ;; Transformed xyz point.
+        (xyzw (float-matrix-nc 4))       ;; Source xyz point.
+        (xyz-tform (float-matrix-nc 4))  ;; Transformed xyz point.
+        )
     (idx-clear :fm:data)
+    (xyzw 3 1)
     ;; Compute density.
     (setq :fm:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
     ;;(printf ":fm:pcl-density %f\n" :fm:pcl-density)
     ;; For all point cloud points.
     (idx-bloop ((xyz xyz))
       ;; Transform to robot world.
-      (vec3tformcoord xyz transform xyz-tform)
+      (idx-changedim xyzw 0 3) (idx-copy xyz xyzw) (idx-changedim xyzw 0 4)
+      (idx-m2dotm1 transform xyzw xyz-tform)
       ;; Find target cell.
       (==> fm world2map-cell xyz-tform map-cell)
       ;; Check cell in bounds.
@@ -147,7 +142,7 @@
   )
 
 #? (feature-map2cost-map <fm> <cm>)
-;; Compute the cost map for the given feature map.
+;; Compute the cost-map for the given feature map.
 (de feature-map2cost-map (fm cm)
   ((-obj- (feature-map)) fm)
   ((-obj- (cost-map)) cm)
@@ -159,7 +154,7 @@
             (sum_xx (cell 2)))
         ;; Store infinite cost for no points.
         (if (= 0 num)
-          (cost 0 :cm:inf-cost)
+          (cost 0 @COST_MAP_INF_COST)
 
           ;; Else store average height plus variance.
           ;; Var = ((Sum(X_i^2) - (2 * Mu * Sum(X_i))) / N) + Mu^2
@@ -245,7 +240,7 @@
       (idx-bloop ((px-torque row-torques))
         (let ((lever-len (- c-idx (:cm:center 1)))
               (cost (:cm:data r-idx c-idx 0)))
-          (if (= :cm:inf-cost cost)
+          (if (= @COST_MAP_INF_COST cost)
             ;; No torque for no points.
             (progn
               ;; Paint this square light blue.
@@ -277,7 +272,7 @@
       (setq r-idx (- r-idx 1))
       (torque ((idx-sum row-torques)))
       )
-    (printf ":cm:pcl-density %f\n" :cm:pcl-density)
+    ;;(printf ":cm:pcl-density %f\n" :cm:pcl-density)
     (if (or near-collision (< :cm:pcl-density 0.4))
       ;; Go  right for negative torque, left otherwise.
       (if (< ((idx-sum near-torques)) 0) @DRIVE_CMD_RIGHT @DRIVE_CMD_LEFT)
@@ -341,7 +336,8 @@
       (let ((linear [d 0 0 0])(angular [d 0 0 0]))
         (linear 0 vlin-cur)
         (angular 2 vang-cur)
-        (printf "publish-cmd-vel [%f 0 0] [0 0 %f]\n" vlin-cur vang-cur)
+        (printf "  :cm:pcl-density %f\n" :cm:pcl-density)
+        (printf "  publish-cmd-vel [%f 0 0] [0 0 %f]\n" vlin-cur vang-cur)
         (==> tb publish-cmd-vel linear angular)
         )
       )
@@ -361,7 +357,9 @@
     (let* ((fm (new feature-map [i 100 100] [f 0.02 0.02] 3))
            (cm (new cost-map fm))
            (cm-rgb (int-matrix (:cm:full-dim 0) (:cm:full-dim 1) 3))
-           (driver (new turtlebot-driver-0 tb 0.4 0.4)))
+           ;;(driver (new turtlebot-driver-0 tb 0.4 0.4))
+           (driver (new turtlebot-driver-0 tb 1.0 1.0))
+           )
       ;; Create properly sized window if it doesn't exist.
       (if (not window) (
         let ((wnd-width 0)(wnd-height 0))
@@ -370,7 +368,7 @@
           (new-window 0 0 wnd-width wnd-height)
           )
         )
-      ;; Do n loops of cost map.
+      ;; Do n loops of driving.
       (for (i 0 n)
         (process-depth-points tb turtlebot-c2v fm cm)
         (cost-map2rgb 0.5 cm cm-rgb)
@@ -385,7 +383,7 @@
   )
 
 #? (process-depth-points <tb> <transform> <fm> <cm>)
-;; Get a point cloud and convert it to a cost map.
+;; Get a point cloud and convert it to a cost-map.
 (de process-depth-points (tb transform fm cm)
   ((-obj- (turtlebot)) tb)
   ((-idx2- (-float-)) transform)
@@ -400,14 +398,14 @@
   )
 
 #? (cost-map2rgb <max-cost> <cm> <cm-rgb>)
-;; Convert the cost map into a display image.
+;; Convert the cost-map into a display image.
 (de cost-map2rgb (max-cost cm cm-rgb)
   ((-float-) max-cost)
   ((-obj- (cost-map)) cm)
   ((-idx3- (-int-)) cm-rgb)
   (idx-bloop ((cost-r :cm:data) (cost-rgb-r cm-rgb))
     (idx-bloop ((cost cost-r) (cost-rgb cost-rgb-r))
-      (if (not (= :cm:inf-cost (cost 0)))
+      (if (not (= @COST_MAP_INF_COST (cost 0)))
         ;; Shade of gray based on cost in range [0, max-cost].
         (let* ((color (min 255 (max 0 (* (/ (cost 0) max-cost) 255)))))
           (idx-bloop ((rgb cost-rgb)) (rgb color))
@@ -430,7 +428,6 @@
   (cost-map
     cost-map
     )
-  vec3tformcoord
   xyz2feature-map
   feature-map2cost-map
   (turtlebot-driver-0
