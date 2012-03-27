@@ -119,7 +119,7 @@
     (idx-clear :fm:data)
     ;; Compute density.
     (setq :fm:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
-    (print (concat ":fm:pcl-density " (str :fm:pcl-density)))
+    ;;(printf ":fm:pcl-density %f\n" :fm:pcl-density)
     ;; For all point cloud points.
     (idx-bloop ((xyz xyz))
       ;; Transform to robot world.
@@ -207,7 +207,7 @@
   ((-obj- (turtlebot)) tb-)
   ((-float-) vlin-max-)
   ((-float-) vang-max-)
-  ;;(setq tb tb-)
+  (setq tb tb-)
   (setq vlin-max vlin-max-)
   (setq vang-max vang-max-)
   (setq vlin-cur 0)
@@ -277,19 +277,17 @@
       (setq r-idx (- r-idx 1))
       (torque ((idx-sum row-torques)))
       )
-    ;;(pretty near-torques)
-    (print (concat ":cm:pcl-density " (str :cm:pcl-density)))
+    (printf ":cm:pcl-density %f\n" :cm:pcl-density)
     (if (or near-collision (< :cm:pcl-density 0.4))
       ;; Go  right for negative torque, left otherwise.
-      ;;(if (< ((idx-sum near-torques)) 0) @DRIVE_CMD_RIGHT @DRIVE_CMD_LEFT)
-      (if (< ((idx-sum near-torques)) 0) @DRIVE_CMD_LEFT @DRIVE_CMD_RIGHT)
+      (if (< ((idx-sum near-torques)) 0) @DRIVE_CMD_RIGHT @DRIVE_CMD_LEFT)
       ;; No near collision ==> zero.
       @DRIVE_CMD_STRAIGHT
       )
     )
   )
 
-#? (==> <turtlebot-driver-0> drive <tb> <cm> <cm-rgb>)
+#? (==> <turtlebot-driver-0> drive <cm> <cm-rgb>)
 ;; Drive the robot based on the given cost-map <cm>. The RGB image <cm-rgb> is
 ;; used for debug output.
 (defmethod turtlebot-driver-0 drive (cm cm-rgb)
@@ -299,7 +297,6 @@
   ;; to the robot are a consistent threat.
   (let ((near-obstacle-code (==> this check-near-obstacles cm cm-rgb))
         (state-before drive-state))
-    ;;(print (concat "near-obstacle-code = " (str near-obstacle-code)))
     (cond 
       ((= @DRIVE_STATE_NORMAL drive-state)
         ;; TODO(reissb) -- 20120311 -- Use map data from the distance to predict
@@ -311,11 +308,11 @@
           (progn (setq vlin-cur vlin-max) (setq vang-cur 0))
 
           ;; Else scan using obstacle direction.
-          (print "CH_CMD - DRIVE_STATE_SCAN")
+          (printf "CH_CMD - DRIVE_STATE_SCAN : ")
           (setq vlin-cur 0)
-          (setq vang-cur (if (= @DRIVE_CMD_LEFT near-obstacle-code)
-                           (progn (print "SCAN-LEFT") (* -1 vang-max))
-                           (print "SCAN-RIGHT") vang-max))
+          (setq vang-cur (if (= @DRIVE_CMD_RIGHT near-obstacle-code)
+                           (progn (printf "SCAN-RIGHT\n") (* -1 vang-max))
+                           (printf "SCAN-LEFT\n") vang-max))
           (setq drive-state @DRIVE_STATE_SCAN)
           )
         ()
@@ -327,7 +324,8 @@
         ;; Return to normal state if there are no obstacles. Otherwise
         ;; continue scanning in the current direction.
         (if (= @DRIVE_CMD_STRAIGHT near-obstacle-code)
-          (progn (print "CH_CMD - DRIVE_STATE_NORMAL") (setq drive-state @DRIVE_STATE_NORMAL))
+          (progn (printf "CH_CMD - DRIVE_STATE_NORMAL\n")
+                 (setq drive-state @DRIVE_STATE_NORMAL))
           )
         ()
         )
@@ -340,74 +338,73 @@
       )
     ;; Only move when not changing states.
     (if (= state-before drive-state)
-      (progn
-        (print (concat "vlin-cur " (str vlin-cur)))
-        (print (concat "vang-cur " (str vang-cur)))
-        (let ((linear [d 0 0 0])(angular [d 0 0 0]))
-          (linear 0 vlin-cur)
-          (angular 2 vang-cur)
-          (print "publish-cmd-vel")
-;;          (pretty linear)
-;;          (pretty angular)
-          (==> tb publish-cmd-vel linear angular)
-          )
+      (let ((linear [d 0 0 0])(angular [d 0 0 0]))
+        (linear 0 vlin-cur)
+        (angular 2 vang-cur)
+        (printf "publish-cmd-vel [%f 0 0] [0 0 %f]\n" vlin-cur vang-cur)
+        (==> tb publish-cmd-vel linear angular)
         )
       )
     )
   ()
   )
 
-(de test-drive-cm (tb n)
+(de test-turtlebot-driver-0 (tb n)
   ;; A valid turtlebot is required.
   (if (not tb)
-    (print "Error : turtlebot is NULL")
+    (printf "Error : turtlebot is NULL\n")
 
     ;; Initialize streams (no harm to repeat this).
-    (==> tb start-sub-camera-depth-image-raw)
     (==> tb start-sub-camera-depth-points)
     (==> tb start-pub-cmd-vel)
     ;; Create feature, cost, and cost rgb maps.
     (let* ((fm (new feature-map [i 100 100] [f 0.02 0.02] 3))
            (cm (new cost-map fm))
            (cm-rgb (int-matrix (:cm:full-dim 0) (:cm:full-dim 1) 3))
-           ;;(driver (new turtlebot-driver-0 tb 0.2 0.5)))
-           ;;(driver (new turtlebot-driver-0 0.2 0.5)))
-           ;;(driver (new turtlebot-driver-0 0.4 0.8)))
            (driver (new turtlebot-driver-0 tb 0.4 0.4)))
       ;; Create properly sized window if it doesn't exist.
       (if (not window) (
         let ((wnd-width 0)(wnd-height 0))
-          (setq wnd-width (+ (idx-dim :tb:camera-depth-image-raw 1)
-                             (* 2 (idx-dim cm-rgb 1))))
-          (setq wnd-height (max (idx-dim :tb:camera-depth-image-raw 0)
-                                (* 2 (idx-dim cm-rgb 0))))
+          (setq wnd-width (* 2 (idx-dim cm-rgb 1)))
+          (setq wnd-height (* 2 (idx-dim cm-rgb 0)))
           (new-window 0 0 wnd-width wnd-height)
           )
         )
       ;; Do n loops of cost map.
       (for (i 0 n)
-        (render-depth-cost-frame tb 0.5 fm cm cm-rgb)
-        (==> driver drive tb cm cm-rgb)
-        ;; Draw cost map again.
-        (rgb-draw-matrix (idx-dim :tb:camera-depth-image-raw 1) 0 cm-rgb 2 2)
+        (process-depth-points tb turtlebot-c2v fm cm)
+        (cost-map2rgb 0.5 cm cm-rgb)
+        (==> driver drive cm cm-rgb)
+        ;; Draw maps.
+        (rgb-draw-matrix 0 0 cm-rgb 2 2)
         )
       :driver:drive-state
       )
     )
-  ;;()
+  ()
   )
 
-#? (render-depth-cost-frame <tb> <max-ht> <fm> <cm> <cm-rgb>)
-;; Grab new depth data and render a single cost-map frame. The <max-ht> gives
-;; the cost at which the display is saturated.
-(de render-depth-cost-frame (tb max-cost fm cm cm-rgb)
+#? (process-depth-points <tb> <transform> <fm> <cm>)
+;; Get a point cloud and convert it to a cost map.
+(de process-depth-points (tb transform fm cm)
+  ((-obj- (turtlebot)) tb)
+  ((-idx2- (-float-)) transform)
+  ((-obj- (feature-map)) fm)
+  ((-obj- (cost-map)) cm)
   ;; Grab new depth data.
-  (while (< (==> tb update-camera-depth-image-raw) 0) ())
   (while (< (==> tb update-camera-depth-points) 0) ())
   ;; Convert points to feature map.
-  (xyz2feature-map :tb:camera-depth-points turtlebot-c2v fm)
+  (xyz2feature-map :tb:camera-depth-points transform fm)
   (feature-map2cost-map fm cm)
-  ;; Convert cost-map to rgb.
+  cm
+  )
+
+#? (cost-map2rgb <max-cost> <cm> <cm-rgb>)
+;; Convert the cost map into a display image.
+(de cost-map2rgb (max-cost cm cm-rgb)
+  ((-float-) max-cost)
+  ((-obj- (cost-map)) cm)
+  ((-idx3- (-int-)) cm-rgb)
   (idx-bloop ((cost-r :cm:data) (cost-rgb-r cm-rgb))
     (idx-bloop ((cost cost-r) (cost-rgb cost-rgb-r))
       (if (not (= :cm:inf-cost (cost 0)))
@@ -420,40 +417,7 @@
         )
       )
     )
-  (gray-draw-matrix 0 0 :tb:camera-depth-image-raw 0 1023 1 1)
-  (rgb-draw-matrix (idx-dim :tb:camera-depth-image-raw 1) 0 cm-rgb 2 2)
-  ()
-  )
-
-#? (run-cost-map <tb> <n>)
-;; Run and display cost map processing for turtlebot <tb> for <n> frames.
-(de run-cost-map (tb n)
-  ;; A valid turtlebot is required.
-  (if (not tb)
-    (print "Error : turtlebot is NULL")
-
-    ;; Initialize streams (no harm to repeat this).
-    (==> tb start-sub-camera-depth-image-raw)
-    (==> tb start-sub-camera-depth-points)
-    ;; Create feature, cost, and cost rgb maps.
-    (let* ((fm (new feature-map [i 100 100] [f 0.02 0.02] 3))
-           (cm (new cost-map fm))
-           (cm-rgb (int-matrix (:cm:full-dim 0) (:cm:full-dim 1) 3)))
-      ;; Create properly sized window if it doesn't exist.
-      (if (not window) (
-        let ((wnd-width 0)(wnd-height 0))
-          (setq wnd-width (+ (idx-dim :tb:camera-depth-image-raw 1)
-                             (* 2 (idx-dim cm-rgb 1))))
-          (setq wnd-height (max (idx-dim :tb:camera-depth-image-raw 0)
-                                (* 2 (idx-dim cm-rgb 0))))
-          (new-window 0 0 wnd-width wnd-height)
-          )
-        )
-      ;; Do n loops of cost map.
-      (for (i 0 n) (render-depth-cost-frame tb 0.5 fm cm cm-rgb))
-      )
-    )
-  ()
+  cm-rgb
   )
 
 (dhc-make-with-c++ () ()
@@ -474,5 +438,7 @@
     check-near-obstacles
     drive
     )
+  process-depth-points
+  cost-map2rgb
   )
 
