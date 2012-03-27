@@ -47,28 +47,25 @@
 (defmethod feature-map world2map-cell (world-coord cell)
   ((-idx1- (-float-)) world-coord)
   ((-idx1- (-int-)) cell)
-  (let ((x-offset (/ (world-coord 1) (scale 0)))
-        (y-offset (/ (world-coord 0) (scale 1))))
-    (idx-copy center cell)
-    (cell 0 (+ (cell 0) (* y-offset -1)))
-    (cell 1 (+ (cell 1) x-offset))
+  (let ((x-offset (/ (world-coord 1) (scale 1)))
+        (y-offset (/ (world-coord 0) (scale 0))))
+    (cell 0 (- (center 0) y-offset))
+    (cell 1 (+ (center 1) x-offset))
     )
   cell
   )
 
-;;#? (==> <feature-map> world2map-cell <cell> <world-coord>)
-;;;; Convert a cell coordinate to world coordinates.
-;;(defmethod feature-map world2map-cell (cell world-coord)
-;;  ((-idx1- (-float-)) world-coord)
-;;  ((-idx1- (-int-)) cell)
-;;  (let ((x-offset (/ (world-coord 1) (scale 0)))
-;;        (y-offset (/ (world-coord 0) (scale 1))))
-;;    (idx-copy center cell)
-;;    (cell 0 (+ (cell 0) (* y-offset -1)))
-;;    (cell 1 (+ (cell 1) x-offset))
-;;    )
-;;  cell
-;;  )
+#? (==> <feature-map> map-cell2world <cell> <world-coord>)
+;; Convert a cell coordinate to world coordinates.
+(defmethod feature-map map-cell2world (cell world-coord)
+  ((-idx1- (-int-)) cell)
+  ((-idx1- (-float-)) world-coord)
+  (let ((cell-offset (idx-sub cell center)))
+    (world-coord 0 (* (scale 0) (- (cell-offset 0))))
+    (world-coord 1 (* (scale 1) (cell-offset 1)))
+    )
+  world-coord
+  )
 
 #? (==> <feature-map> in-bounds <cell>)
 ;; Test if cell is within the map area.
@@ -169,6 +166,42 @@
   cm
   )
 
+#? (process-depth-points <tb> <transform> <fm> <cm>)
+;; Get a point cloud and convert it to a cost-map.
+(de process-depth-points (tb transform fm cm)
+  ((-obj- (turtlebot)) tb)
+  ((-idx2- (-float-)) transform)
+  ((-obj- (feature-map)) fm)
+  ((-obj- (cost-map)) cm)
+  ;; Grab new depth data.
+  (while (< (==> tb update-camera-depth-points) 0) ())
+  ;; Convert points to feature map.
+  (xyz2feature-map :tb:camera-depth-points transform fm)
+  (feature-map2cost-map fm cm)
+  cm
+  )
+
+#? (cost-map2rgb <max-cost> <cm> <cm-rgb>)
+;; Convert the cost-map into a display image.
+(de cost-map2rgb (max-cost cm cm-rgb)
+  ((-float-) max-cost)
+  ((-obj- (cost-map)) cm)
+  ((-idx3- (-int-)) cm-rgb)
+  (idx-bloop ((cost-r :cm:data) (cost-rgb-r cm-rgb))
+    (idx-bloop ((cost cost-r) (cost-rgb cost-rgb-r))
+      (if (not (= @COST_MAP_INF_COST (cost 0)))
+        ;; Shade of gray based on cost in range [0, max-cost].
+        (let* ((color (min 255 (max 0 (* (/ (cost 0) max-cost) 255)))))
+          (idx-bloop ((rgb cost-rgb)) (rgb color))
+          )
+        ;; Else blue.
+        (idx-copy [i 0 0 255] cost-rgb)
+        )
+      )
+    )
+  cm-rgb
+  )
+
 (defclass turtlebot-driver-0 object
   ((-obj- (turtlebot)) tb)
   ((-float-) vlin-max) ;; Max linear velocity.
@@ -207,9 +240,9 @@
   (setq vang-max vang-max-)
   (setq vlin-cur 0)
   (setq vang-cur vang-max)
-  (setq near-check-dim [f 0.55 0.55])
+  (setq near-check-dim [f 1.0 0.55])
   (setq tb-height 0.5)
-  (setq tb-drive-height 0.05)
+  (setq tb-drive-height 0.1)
   ;; Init driving modes. Start by scanning.
   (setq drive-state @DRIVE_STATE_SCAN)
   )
@@ -225,12 +258,12 @@
   ;; If there are obstacles, then we will enter drive-state-scan.
   (let* ((near-collision ())
          (near-check-half-dim-cells (idx-div (idx-div near-check-dim [f 2 2]) :cm:scale))
-         (c-idx-begin (- (:cm:center 1) (near-check-half-dim-cells 0)))
-         (c-idx-end (+ (:cm:center 1) (near-check-half-dim-cells 0)))
+         (c-idx-begin (- (:cm:center 1) (near-check-half-dim-cells 1)))
+         (c-idx-end (+ (:cm:center 1) (near-check-half-dim-cells 1)))
          (c-idx c-idx-begin)
          (row-torques (float-matrix-nc (- c-idx-end c-idx-begin)))
          (r-idx-begin (:cm:center 0))
-         (r-idx-end (- (- (:cm:center 0) (* 2 (near-check-half-dim-cells 1))) 1))
+         (r-idx-end (- (- (:cm:center 0) (* 2 (near-check-half-dim-cells 0))) 1))
          (near-torques (float-matrix (- r-idx-begin r-idx-end)))
          (r-idx r-idx-begin))
     (idx-bloop ((torque near-torques))
@@ -250,8 +283,9 @@
               (px-torque 0) ;; No torque!
               )
 
-            ;; Check for a collision using tb-height and tb-drive-height.
-            (if (and (< tb-height cost) (< tb-drive-height cost))
+            ;; Check for a collision using
+            ;;   (cost < tb-drive-height) or (cost > tb-height).
+            (if (or (< cost tb-drive-height) (> cost tb-height))
               (px-torque 0)
 
               ;; Red visual (for a hit).
@@ -382,41 +416,67 @@
   ()
   )
 
-#? (process-depth-points <tb> <transform> <fm> <cm>)
-;; Get a point cloud and convert it to a cost-map.
-(de process-depth-points (tb transform fm cm)
-  ((-obj- (turtlebot)) tb)
+#?  (xyz2global-feature-map <xyz> <odom> <transform> <gm> <fm>)
+;; Fill in feature map for each map cell using the point cloud <xyz> where
+;; the feature-map is situated within the global map.
+;;   Features:
+;;   [0] - Number of points.
+;;   [1] - Sum of heights.
+;;   [2] - Sum of squared heights.
+(de xyz2global-feature-map (xyz odom-pos odom-orien transform gm fm)
+  ((-idx2- (-float-)) xyz)
+  ((-idx1- (-float-)) odom-pos)
+  ((-idx1- (-float-)) odom-orien)
   ((-idx2- (-float-)) transform)
+  ((-obj- (cost-map)) gm)
   ((-obj- (feature-map)) fm)
-  ((-obj- (cost-map)) cm)
-  ;; Grab new depth data.
-  (while (< (==> tb update-camera-depth-points) 0) ())
-  ;; Convert points to feature map.
-  (xyz2feature-map :tb:camera-depth-points transform fm)
-  (feature-map2cost-map fm cm)
-  cm
-  )
-
-#? (cost-map2rgb <max-cost> <cm> <cm-rgb>)
-;; Convert the cost-map into a display image.
-(de cost-map2rgb (max-cost cm cm-rgb)
-  ((-float-) max-cost)
-  ((-obj- (cost-map)) cm)
-  ((-idx3- (-int-)) cm-rgb)
-  (idx-bloop ((cost-r :cm:data) (cost-rgb-r cm-rgb))
-    (idx-bloop ((cost cost-r) (cost-rgb cost-rgb-r))
-      (if (not (= @COST_MAP_INF_COST (cost 0)))
-        ;; Shade of gray based on cost in range [0, max-cost].
-        (let* ((color (min 255 (max 0 (* (/ (cost 0) max-cost) 255)))))
-          (idx-bloop ((rgb cost-rgb)) (rgb color))
+  ;; Place the feature map center pixel on the pixel closest to the
+  ;; robot center in the global map. Compute the offset from the pixel
+  ;; center to the robot center and compute the feature map using that
+  ;; offset when transforming the point cloud.
+  (let ((global-cell [i 0 0])                    ;; Robot position in global map.
+        (global-cell-world (float-matrix-nc 4))  ;; Global cell in world coordinates.
+        (global-cell-offset (float-matrix-nc 4)) ;; Offset from cell pixel center to robot.
+        (map-cell [i 0 0])                       ;; Target cell for xyz point.
+        (xyzw (float-matrix-nc 4))               ;; Source xyz point.
+        (xyz-tform (float-matrix-nc 4))          ;; Transformed xyz point.
+        )
+    ;; Compute map cell for robot position in global map.
+    (==> gm world2map-cell odom-pos global-cell)
+    ;; Get pixel center for global-cell in world coordinates.
+    (==> gm map-cell2world global-cell global-cell-world)
+    (idx-clear :fm:data)
+    (xyzw 3 1)
+    ;; Compute density.
+    (setq :fm:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
+    ;;(printf ":fm:pcl-density %f\n" :fm:pcl-density)
+    ;; For all point cloud points.
+    (idx-bloop ((xyz xyz))
+      ;; Transform to robot world.
+      (idx-changedim xyzw 0 3) (idx-copy xyz xyzw) (idx-changedim xyzw 0 4)
+      (idx-m2dotm1 transform xyzw xyz-tform)
+      ;; Find target cell.
+      (==> fm world2map-cell xyz-tform map-cell)
+      ;; Check cell in bounds.
+      (if (==> fm in-bounds map-cell)
+        (let ((h (* -1 (xyz-tform 2))))
+          ;; Increment count.
+          (:fm:data (map-cell 0) (map-cell 1) 0
+            (+ (:fm:data (map-cell 0) (map-cell 1) 0) 1))
+          ;; Sum height.
+          (:fm:data (map-cell 0) (map-cell 1) 1
+            (+ (:fm:data (map-cell 0) (map-cell 1) 1) h))
+          ;; Sum square height.
+          (:fm:data (map-cell 0) (map-cell 1) 2
+            (+ (:fm:data (map-cell 0) (map-cell 1) 2) (* h h)))
           )
-        ;; Else blue.
-        (idx-copy [i 0 0 255] cost-rgb)
+        ()
         )
       )
     )
-  cm-rgb
+  fm
   )
+
 
 (dhc-make-with-c++ () ()
   cpp-dummy
@@ -430,12 +490,12 @@
     )
   xyz2feature-map
   feature-map2cost-map
+  process-depth-points
+  cost-map2rgb
   (turtlebot-driver-0
     turtlebot-driver-0
     check-near-obstacles
     drive
     )
-  process-depth-points
-  cost-map2rgb
   )
 
