@@ -93,21 +93,6 @@
   this
   )
 
-#? global-map
-;; A persistent map of the world.
-(defclass global-map cost-map)
-
-#? (new global-map <half-dim> <scale>)
-;; Create a global map with the given dimensions. Ensure that the scale
-;; matches with assoicated feature maps.
-(defmethod global-map global-map (half-dim- scale-)
-  ((-idx1- (-int-)) half-dim-)
-  ((-idx1- (-float-)) scale-)
-  (==> this feature-map half-dim- scale- 1)
-  (idx-copy half-dim center)
-  this
-  )
-
 #?  (xyz2feature-map <xyz> <transform> <fm>)
 ;; Fill in feature map for each map cell using the point cloud <xyz>
 ;;   Features:
@@ -451,7 +436,7 @@
   m
   )
 
-#? (xyz2global-feature-map <xyz> <odom-pos> <odom-orien> <transform> <gm> <fm>)
+#? (xyz2global-feature-map <xyz> <odom-pos> <odom-orien> <transform> <fm-global> <fm-local>)
 ;; Fill in feature map for each map cell using the point cloud <xyz> where
 ;; the feature-map is situated within the global map.
 ;;   Features:
@@ -460,13 +445,13 @@
 ;;   [2] - Sum of squared heights.
 ;;
 ;; Returns the center pixel coordinate in global-map space of the feature-map.
-(de xyz2global-feature-map (xyz odom-pos odom-orien transform gm fm)
+(de xyz2global-feature-map (xyz odom-pos odom-orien transform fm-global fm-local)
   ((-idx2- (-float-)) xyz)
   ((-idx1- (-float-)) odom-pos)
   ((-idx1- (-float-)) odom-orien)
   ((-idx2- (-float-)) transform)
-  ((-obj- (global-map)) gm)
-  ((-obj- (feature-map)) fm)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (feature-map)) fm-local)
   ;; Place the feature map center pixel on the pixel closest to the
   ;; robot center in the global map. Compute the offset from the pixel
   ;; center to the robot center and compute the feature map using that
@@ -481,9 +466,9 @@
         (xyz-tform (float-matrix-nc 4))          ;; Transformed xyz point.
         )
     ;; Compute map cell for robot position in global map.
-    (==> gm world2map-cell odom-pos global-cell)
+    (==> fm-global world2map-cell odom-pos global-cell)
     ;; Get pixel center for global-cell in world coordinates.
-    (==> gm map-cell2world global-cell global-cell-world)
+    (==> fm-global map-cell2world global-cell global-cell-world)
     (let ((odom-pos-dim-0 (idx-dim odom-pos 0)))
       (idx-changedim odom-pos 0 2)
       (idx-sub odom-pos global-cell-world global-cell-offset)
@@ -498,30 +483,30 @@
                             (* (global-cell-offset 1) (global-mat-cell 1 1))))
     ;; Transformation order: global-mat-cell * transform * xyz
     (idx-m2timesm2 global-mat-cell transform transform-full)
-    (idx-clear :fm:data)
+    (idx-clear :fm-local:data)
     (xyzw 3 1)
     ;; Compute density.
-    (setq :fm:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
-    ;;(printf ":fm:pcl-density %f\n" :fm:pcl-density)
+    (setq :fm-local:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
+    ;;(printf ":fm-local:pcl-density %f\n" :fm-local:pcl-density)
     ;; For all point cloud points.
     (idx-bloop ((xyz xyz))
       ;; Transform to robot world.
       (idx-changedim xyzw 0 3) (idx-copy xyz xyzw) (idx-changedim xyzw 0 4)
       (idx-m2dotm1 transform-full xyzw xyz-tform)
       ;; Find target cell.
-      (==> fm world2map-cell xyz-tform map-cell)
+      (==> fm-local world2map-cell xyz-tform map-cell)
       ;; Check cell in bounds.
-      (if (==> fm in-bounds map-cell)
+      (if (==> fm-local in-bounds map-cell)
         (let ((h (* -1 (xyz-tform 2))))
           ;; Increment count.
-          (:fm:data (map-cell 0) (map-cell 1) 0
-            (+ (:fm:data (map-cell 0) (map-cell 1) 0) 1))
+          (:fm-local:data (map-cell 0) (map-cell 1) 0
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 0) 1))
           ;; Sum height.
-          (:fm:data (map-cell 0) (map-cell 1) 1
-            (+ (:fm:data (map-cell 0) (map-cell 1) 1) h))
+          (:fm-local:data (map-cell 0) (map-cell 1) 1
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 1) h))
           ;; Sum square height.
-          (:fm:data (map-cell 0) (map-cell 1) 2
-            (+ (:fm:data (map-cell 0) (map-cell 1) 2) (* h h)))
+          (:fm-local:data (map-cell 0) (map-cell 1) 2
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 2) (* h h)))
           )
         ()
         )
@@ -530,27 +515,35 @@
     )
   )
 
+;; Rate at which the global map decays measured points per frame.
+(defparameter pt-decay-rate 5)
+
 (de xyz2global-feature-map-test (tb n)
   (==> tb start-sub-camera-depth-points)
   (==> tb start-sub-odom)
   ;; Create feature, cost, and cost rgb maps.
   (let* ((scale [f 0.05 0.05])
-         (fm (new feature-map [i 65 65] scale 3))
-         (gm (new global-map [i 300 300] scale))
-         (gm-rgb (int-matrix (:gm:full-dim 0) (:gm:full-dim 1) 3))
-         (cm ()) (cm-rgb ())
-         (cm-cell ())
+         (fm-global (new feature-map [i 300 300] scale 3))
+         (cm-global ())
+         (cm-global-rgb ())
+         (fm-local (new feature-map [i 65 65] scale 3))
+         (cm-local ())
+         (cm-local-rgb ())
+         (fm-global-cell ())
          )
-    ;; Setup cost map.
-    (idx-copy :fm:half-dim :fm:center)
-    (setq cm (new cost-map fm))
-    (setq cm-rgb (int-matrix (:cm:full-dim 0) (:cm:full-dim 1) 3))
+    ;; Setup cost maps.
+    (idx-copy :fm-global:half-dim :fm-global:center)
+    (setq cm-global (new cost-map fm-global))
+    (setq cm-global-rgb (int-matrix (:cm-global:full-dim 0) (:cm-global:full-dim 1) 3))
+    (idx-copy :fm-local:half-dim :fm-local:center)
+    (setq cm-local (new cost-map fm-local))
+    (setq cm-local-rgb (int-matrix (:cm-local:full-dim 0) (:cm-local:full-dim 1) 3))
     ;; Place feature map center.
     ;; Create properly sized window if it doesn't exist.
     (if (not window) (
       let ((wnd-width 0)(wnd-height 0))
-        (setq wnd-width (+ (idx-dim gm-rgb 1) (idx-dim cm-rgb 1)))
-        (setq wnd-height (idx-dim gm-rgb 0))
+        (setq wnd-width (+ (idx-dim cm-global-rgb 1) (idx-dim cm-local-rgb 1)))
+        (setq wnd-height (idx-dim cm-global-rgb 0))
         (new-window 0 0 wnd-width wnd-height)
         )
       )
@@ -567,17 +560,61 @@
         (idx-copy :tb:odom-pose-orientation odom-orien)
         ;; Flip the angle.
         (odom-orien 3 (- (odom-orien 3)))
-        (setq cm-cell (xyz2global-feature-map :tb:camera-depth-points
-                                              odom-pos odom-orien
-                                              turtlebot-c2v gm fm))
+        (setq fm-global-cell (xyz2global-feature-map :tb:camera-depth-points
+                                                     odom-pos odom-orien
+                                                     turtlebot-c2v fm-global fm-local))
         )
-      (feature-map2cost-map fm cm)
-      ;; Integrate cost-map into global map.
+      (feature-map2cost-map fm-local cm-local)
+      ;; Decay the global feature map.
+      (idx-pbloop ((fm-r :fm-global:data)(cm-r :cm-global:data)(cm-rgb-r cm-global-rgb))
+        (idx-bloop ((fm fm-r)(cm cm-r)(cm-rgb cm-rgb-r))
+          (fm 0 (- (fm 0) pt-decay-rate))
+          ;; If decayed completely, clear the fm, cm, cm-rgb cells.
+          (if (< 0 (fm 1))
+            (progn (idx-copy [f 0 0 0] fm)
+                   (cm @COST_MAP_INF_COST)
+                   (idx-copy [i 0 0 255] cm-rgb))
+            )
+          )
+        )
+      ;; Integrate fm-local into fm-global.
+      (let ((ul (idx-sub fm-global-cell :fm-local:half-dim))
+            (lr (idx-add fm-global-cell :fm-local:half-dim))
+            (roi (int-matrix-nc 4))
+            (mask-rows 0)
+            (mask-cols 0)
+            (mask-offset 0)
+            )
+        (roi 0 (max (ul 0) 0))
+        (roi 1 (max (ul 1) 0))
+        (roi 2 (min (lr 0) (:fm-global:full-dim 0)))
+        (roi 3 (min (lr 1) (:fm-global:full-dim 1)))
+        (setq mask-rows (- (roi 2) (roi 0)))
+        (setq mask-cols (- (roi 3) (roi 1)))
+        (setq mask-offset (+ (* (ul 0) (:fm-global:full-dim 1)) (ul 1)))
+        (pretty roi)
+        (pretty mask-rows)
+        (pretty mask-cols)
+        (pretty mask-offset)
+        (if (or (<= mask-rows 0) (<= mask-cols 0))
+          () ;; Do nothing when mask is out of bounds.
+
+          ;; Mask fm-global.
+          (idx-changedim :fm-global:data 0 mask-rows)
+          (idx-changedim :fm-global:data 1 mask-cols)
+          (idx-changeoffset :fm-global:data mask-offset)
+          ;; TODO(reissb) -- Clip fm-local.
+          ;; Undo mask.
+          (idx-changedim :fm-global:data 0 (:fm-global:full-dim 0))
+          (idx-changedim :fm-global:data 1 (:fm-global:full-dim 1))
+          (idx-changeoffset :fm-global:data 0)
+          )
+        )
       ;; Prepare for display.
-      (cost-map2rgb 0.5 cm cm-rgb)
+      (cost-map2rgb 0.5 cm-local cm-local-rgb)
       ;; Draw maps.
-      (rgb-draw-matrix 0 0 gm-rgb 1 1)
-      (rgb-draw-matrix (idx-dim gm-rgb 1) 0 cm-rgb 1 1)
+      (rgb-draw-matrix 0 0 cm-global-rgb 1 1)
+      (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1)
       )
     )
   )
@@ -592,9 +629,6 @@
     )
   (cost-map
     cost-map
-    )
-  (global-map
-    global-map
     )
   xyz2feature-map
   feature-map2cost-map
