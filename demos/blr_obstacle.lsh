@@ -178,8 +178,8 @@
   (while (< (==> tb update-camera-depth-points) 0) ())
   ;; Convert points to feature map.
   (xyz2feature-map :tb:camera-depth-points transform fm)
-  (setq :cm:pcl-density :fm:pcl-density)
-  (feature-map2cost-map :fm:data :cm:data)
+  (progn (feature-map2cost-map :fm:data :cm:data)
+         (setq :cm:pcl-density :fm:pcl-density))
   cm
   )
 
@@ -516,8 +516,83 @@
     )
   )
 
-;; Rate at which the global map decays measured points per frame.
-(defparameter pt-decay-rate 5)
+;; Decay a global feature map and cost map with rgb optimiations.
+(de fm-global-decay (fm-global cm-global cm-global-rgb pt-decay-rate)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (cost-map)) cm-global)
+  ((-idx3- (-int-)) cm-global-rgb)
+  ((-float-) pt-decay-rate)
+  (idx-pbloop ((fm-r :fm-global:data)(cm-r :cm-global:data)(cm-rgb-r cm-global-rgb))
+    (idx-bloop ((fm fm-r)(cm cm-r)(cm-rgb cm-rgb-r))
+      (fm 0 (- (fm 0) pt-decay-rate))
+      ;; If decayed completely, clear the fm, cm, cm-rgb cells.
+      (if (< (fm 0) 0)
+        (progn (idx-copy [f 0 0 0] fm)
+               (cm 0 @COST_MAP_INF_COST)
+               (idx-copy [i 0 0 255] cm-rgb))
+        )
+      )
+    )
+  )
+
+;; Take a local feature map and integrate it into a global feature map.
+(de fm-global-update (fm-global cm-global cm-global-rgb fm-global-cell fm-local)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (cost-map)) cm-global)
+  ((-idx3- (-int-)) cm-global-rgb)
+  ((-idx1- (-int-)) fm-global-cell)
+  ((-obj- (feature-map)) fm-local)
+  ;; Decay the global feature map.
+  (fm-global-decay fm-global cm-global cm-global-rgb 4)
+  ;; Integrate fm-local into fm-global.
+  (let ((ul (idx-sub fm-global-cell :fm-local:half-dim))
+        (lr (idx-add fm-global-cell :fm-local:half-dim))
+        (roi (int-matrix-nc 4))
+        (mask-rows 0)
+        (mask-cols 0)
+        )
+    (roi 0 (max (ul 0) 0))
+    (roi 1 (max (ul 1) 0))
+    (roi 2 (min (lr 0) (:fm-global:full-dim 0)))
+    (roi 3 (min (lr 1) (:fm-global:full-dim 1)))
+    (setq mask-rows (+ (- (roi 2) (roi 0)) 1))
+    (setq mask-cols (+ (- (roi 3) (roi 1)) 1))
+    ;; Make sure that mask is in bounds.
+    (if (or (<= mask-rows 0) (<= mask-cols 0))
+      () ;; Do nothing when mask is out of bounds.
+
+      ;; Mask fm-global, cm-global and integrate fm-local.
+      (let ((fm-global-mask
+              (narrow (narrow :fm-global:data 0 mask-rows (ul 0)) 1 mask-cols (ul 1)))
+            (cm-global-mask
+              (narrow (narrow :cm-global:data 0 mask-rows (ul 0)) 1 mask-cols (ul 1)))
+           )
+        ;; TODO(reissb) -- Clip fm-local.
+        (idx-pbloop ((fm-global-r fm-global-mask)(fm-local-r :fm-local:data))
+          (idx-bloop ((fm-global fm-global-r)(fm-local fm-local-r))
+            ;; Weighted average of the features.
+            (if (= (fm-local 0) 0)
+              () ;; Do nothing when there is no data (already decayed).
+
+              (let* ((pts-total (+ (fm-global 0)(fm-local 0)))
+                     (pts-ratio-global (/ (fm-global 0) pts-total))
+                     (pts-ratio-local (/ (fm-local 0) pts-total))
+                     )
+                (fm-global 0 pts-total)
+                (fm-global 1 (+ (* (fm-global 1) pts-ratio-global)
+                                (* (fm-local 1) pts-ratio-local)))
+                (fm-global 2 (+ (* (fm-global 2) pts-ratio-global)
+                                (* (fm-local 2) pts-ratio-local)))
+                )
+              )
+            )
+          )
+        ;; Compute global cost map.
+        (feature-map2cost-map fm-global-mask cm-global-mask)
+        )
+      )
+    )
+  )
 
 (de xyz2global-feature-map-test (tb n)
   (==> tb start-sub-camera-depth-points)
@@ -565,72 +640,10 @@
                                                      odom-pos odom-orien
                                                      turtlebot-c2v fm-global fm-local))
         )
-      (setq :cm-local:pcl-density :fm-local:pcl-density)
-      (feature-map2cost-map :fm-local:data :cm-local:data)
-      ;; Decay the global feature map.
-      (idx-pbloop ((fm-r :fm-global:data)(cm-r :cm-global:data)(cm-rgb-r cm-global-rgb))
-        (idx-bloop ((fm fm-r)(cm cm-r)(cm-rgb cm-rgb-r))
-          (fm 0 (- (fm 0) pt-decay-rate))
-          ;; If decayed completely, clear the fm, cm, cm-rgb cells.
-          (if (< (fm 0) 0)
-            (progn (idx-copy [f 0 0 0] fm)
-                   (cm 0 @COST_MAP_INF_COST)
-                   (idx-copy [i 0 0 255] cm-rgb))
-            )
-          )
-        )
-      ;; Integrate fm-local into fm-global.
-      (let ((ul (idx-sub fm-global-cell :fm-local:half-dim))
-            (lr (idx-add fm-global-cell :fm-local:half-dim))
-            (roi (int-matrix-nc 4))
-            (mask-rows 0)
-            (mask-cols 0)
-            (mask-offset 0)
-            (fm-global-mask ())
-            (cm-global-mask ())
-            )
-        (roi 0 (max (ul 0) 0))
-        (roi 1 (max (ul 1) 0))
-        (roi 2 (min (lr 0) (:fm-global:full-dim 0)))
-        (roi 3 (min (lr 1) (:fm-global:full-dim 1)))
-        (setq mask-rows (+ (- (roi 2) (roi 0)) 1))
-        (setq mask-cols (+ (- (roi 3) (roi 1)) 1))
-        (pretty roi) (pretty mask-rows) (pretty mask-cols)
-        ;; Make sure that mask is in bounds.
-        (if (or (<= mask-rows 0) (<= mask-cols 0))
-          () ;; Do nothing when mask is out of bounds.
-
-          ;; Mask fm-global and integrate fm-local.
-          (setq fm-global-mask
-            (narrow (narrow :fm-global:data 0 mask-rows (ul 0)) 1 mask-cols (ul 1)))
-          (printf "fm mask dims: %d %d\n" (idx-dim fm-global-mask 0) (idx-dim fm-global-mask 1))
-          ;; TODO(reissb) -- Clip fm-local.
-          (idx-pbloop ((fm-global-r fm-global-mask)(fm-local-r :fm-local:data))
-            (idx-bloop ((fm-global fm-global-r)(fm-local fm-local-r))
-              ;; Weighted average of the features.
-              (if (= (fm-local 0) 0)
-                () ;; Do nothing when there is no data (already decayed).
-
-                (let* ((pts-total (+ (fm-global 0)(fm-local 0)))
-                       (pts-ratio-global (/ (fm-global 0) pts-total))
-                       (pts-ratio-local (/ (fm-local 0) pts-total))
-                       )
-                  (fm-global 0 pts-total)
-                  (fm-global 1 (+ (* (fm-global 1) pts-ratio-global)
-                                  (* (fm-local 1) pts-ratio-local)))
-                  (fm-global 2 (+ (* (fm-global 2) pts-ratio-global)
-                                  (* (fm-local 2) pts-ratio-local)))
-                  )
-                )
-              )
-            )
-          ;; Compute global cost map.
-          (setq cm-global-mask
-            (narrow (narrow :cm-global:data 0 mask-rows (ul 0)) 1 mask-cols (ul 1)))
-          (printf "cm mask dims: %d %d\n" (idx-dim cm-global-mask 0) (idx-dim cm-global-mask 1))
-          (feature-map2cost-map fm-global-mask cm-global-mask)
-          )
-        )
+      (progn (feature-map2cost-map :fm-local:data :cm-local:data)
+             (setq :cm-local:pcl-density :fm-local:pcl-density))
+      ;; Update global map (with cost map rgb optimizations).
+      (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local)
       ;; Prepare for display.
       (cost-map2rgb 0.5 cm-global cm-global-rgb)
       (cost-map2rgb 0.5 cm-local cm-local-rgb)
@@ -663,5 +676,7 @@
     )
   quaternion2matrix
   xyz2global-feature-map
+  fm-global-decay
+  fm-global-update
   )
 
