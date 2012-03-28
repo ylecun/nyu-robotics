@@ -596,6 +596,7 @@
 
 (de xyz2global-feature-map-test (tb n)
   (==> tb start-sub-camera-depth-points)
+;;  (==> tb start-sub-robot-pose-ekf)
   (==> tb start-sub-odom)
   ;; Create feature, cost, and cost rgb maps.
   (let* ((scale [f 0.05 0.05])
@@ -626,12 +627,15 @@
     ;; Do n loops of processing.
     (for (i 0 (- n 1))
       ;; Grab new data.
+;;      (while (< (==> tb update-robot-pose-ekf) 0) ())
       (while (< (==> tb update-odom) 0) ())
       (while (< (==> tb update-camera-depth-points) 0) ())
       ;; Convert points to feature map.
-      (let ((odom-pos (float-matrix 3))
-            (odom-orien (float-matrix 4))
+      (let ((odom-pos (float-matrix-nc 3))
+            (odom-orien (float-matrix-nc 4))
            )
+;;        (idx-copy :tb:robot-pose-ekf-position odom-pos)
+;;        (idx-copy :tb:robot-pose-ekf-orientation odom-orien)
         (idx-copy :tb:odom-pose-position odom-pos)
         (idx-copy :tb:odom-pose-orientation odom-orien)
         ;; Flip the angle.

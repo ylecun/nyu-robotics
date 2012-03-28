@@ -159,6 +159,10 @@
   ((-idx1- (-double-)) odom-twist-linear)
   ((-idx1- (-double-)) odom-twist-angular)
   ((-idx1- (-double-)) odom-twist-covariance)
+  ;; Pose EKF.
+  ((-idx1- (-double-)) robot-pose-ekf-position)
+  ((-idx1- (-double-)) robot-pose-ekf-orientation)
+  ((-idx1- (-double-)) robot-pose-ekf-covariance)
   ;; Depth points (XYZ).
   ((-idx2- (-float-)) camera-depth-points)
   )
@@ -175,6 +179,10 @@
   (setq odom-twist-linear (double-matrix 3))
   (setq odom-twist-angular (double-matrix 3))
   (setq odom-twist-covariance (double-matrix 36))
+  ;; Robot pose EKF.
+  (setq robot-pose-ekf-position (double-matrix 3))
+  (setq robot-pose-ekf-orientation (double-matrix 4))
+  (setq robot-pose-ekf-covariance (double-matrix 36))
   ;; Depth points (XYZ).
   (setq camera-depth-points (float-matrix (* 480 640) 3))
   ()
@@ -218,6 +226,23 @@
                                           IDX_PTR($odom_twist_linear, double),
                                           IDX_PTR($odom_twist_angular, double),
                                           IDX_PTR($odom_twist_covariance, double)))
+     #})
+  )
+
+#? (==> <turtlebot> start-sub-robot-pose-ekf)
+;; Start the robot-pose-ekf subscriber.
+(defmethod turtlebot start-sub-robot-pose-ekf ()
+  (to-int #{ $client->StartSubscriber<RobotPoseEkfSubscriber>() #})
+  )
+
+#? (==> <turtlebot> update-robot-pose-ekf)
+;; Update the robot-pose-ekf subscriber.
+(defmethod turtlebot update-robot-pose-ekf ()
+  (to-int #{
+     $client->Update<RobotPoseEkfSubscriber>(
+       &RobotPoseEkfSubscriber::lush_convert_type(IDX_PTR($robot_pose_ekf_position, double),
+                                                  IDX_PTR($robot_pose_ekf_orientation, double),
+                                                  IDX_PTR($robot_pose_ekf_covariance, double)))
      #})
   )
 
@@ -276,6 +301,9 @@
     ;; Odom.
     start-sub-odom
     update-odom
+    ;; Robot pose EKF.
+    start-sub-robot-pose-ekf
+    update-robot-pose-ekf
     ;; Depth points (XYZ).
     start-sub-camera-depth-points
     update-camera-depth-points

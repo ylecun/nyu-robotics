@@ -1,6 +1,7 @@
 #include "ros/roslush.h"
 #include "sensor_msgs/Image.h"
 #include "geometry_msgs/Twist.h"
+#include "geometry_msgs/PoseWithCovarianceStamped.h"
 #include "nav_msgs/Odometry.h"
 #include "sensor_msgs/PointCloud2.h"
 #include "sensor_msgs/Imu.h"
@@ -55,7 +56,7 @@ struct RosLushOdom
   typedef OdomData lush_convert_type;
   inline static const char* TopicStr()
   {
-    return "robot_pose_ekf/odom_combined";
+    return "/odom";
   }
   inline static void CopyMsgData(const msg_type::ConstPtr& msg,
                                  lush_convert_type* data)
@@ -71,6 +72,34 @@ struct RosLushOdom
   }
 };
 typedef RosSubscriber<RosLushOdom> OdomSubscriber;
+
+/// <summary> Turtlebot robot_pose_ekf subscriber. </summary>
+struct RosLushRobotPoseEkf
+{
+  struct RobotPoseEkfData
+  {
+    RobotPoseEkfData(double* p_pos, double* p_orien, double* p_cov)
+      : pose_position(p_pos), pose_orientation(p_orien), pose_covariance(p_cov)
+    {}
+    double *pose_position, *pose_orientation, *pose_covariance;
+  };
+  enum { queue_size = 5, };
+  typedef geometry_msgs::PoseWithCovarianceStamped msg_type;
+  typedef RobotPoseEkfData lush_convert_type;
+  inline static const char* TopicStr()
+  {
+    return "/robot_pose_ekf/odom";
+  }
+  inline static void CopyMsgData(const msg_type::ConstPtr& msg,
+                                 lush_convert_type* data)
+  {
+    CopyVector3(msg->pose.pose.position, data->pose_position);
+    CopyVector4(msg->pose.pose.orientation, data->pose_orientation);
+    memcpy(data->pose_covariance, &msg->pose.covariance[0],
+           msg->pose.covariance.size() * sizeof(msg->pose.covariance[0]));
+  }
+};
+typedef RosSubscriber<RosLushRobotPoseEkf> RobotPoseEkfSubscriber;
 
 /// <summary> Point cloud subscriber. </summary>
 struct RosLushCameraDepthPoints
@@ -155,6 +184,7 @@ class RosStreams
   : // Subscribers.
     public CameraDepthImageRawSubscriber,
     public OdomSubscriber,
+    public RobotPoseEkfSubscriber,
     public CameraDepthPointsSubscriber,
     // Publishers
     public CmdVelPublisher
