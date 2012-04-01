@@ -1,0 +1,194 @@
+;; Feature map and cost map objects.
+(libload "libc/constants")
+
+#? feature-map
+;; A generic structure used to store feature vectors. Has center and
+;; scale parameters best for rectangular maps.
+(defclass feature-map object
+  ((-idx3- (-float-)) data)
+  ((-idx1- (-float-)) scale)
+  ((-idx1- (-int-)) center)
+  ((-idx1- (-int-)) full-dim)
+  ((-idx1- (-int-)) half-dim)
+  ((-float-) pcl-density)
+  ((-int-) features)
+  )
+
+#? (new feature-map <half-dim> <scale> <features>)
+;; Create a feature map with the given dimensions and scale. For each of the
+;; cells there is a single feature vector with <features> entries. This data
+;; has no implicit semantics.
+(defmethod feature-map feature-map (half-dim- scale- features-)
+  ((-idx1- (-int-)) half-dim-)
+  ((-idx1- (-float-)) scale-)
+  ((-int-) features-)
+  (setq half-dim (idx-copy half-dim-))
+  (setq scale (idx-copy scale-))
+  (setq features features-)
+  (setq center (idx-mul half-dim [i 2 1]))
+  (setq full-dim (idx-add (idx-mul half-dim [i 2 2]) [i 1 1]))
+  (setq data (float-matrix (full-dim 0) (full-dim 1) features))
+  (setq pcl-density 0)
+  )
+
+#? (==> <feature-map> world2map-cell <world-coord> <cell>)
+;; Compute the map cell for the given world coordinate. The origin is always
+;; the map center.
+(defmethod feature-map world2map-cell (world-coord cell)
+  ((-idx1- (-float-)) world-coord)
+  ((-idx1- (-int-)) cell)
+  (let ((x-offset (/ (world-coord 1) (scale 1)))
+        (y-offset (/ (world-coord 0) (scale 0))))
+    (cell 0 (- (center 0) y-offset))
+    (cell 1 (+ (center 1) x-offset))
+    )
+  cell
+  )
+
+#? (==> <feature-map> map-cell2world <cell> <world-coord>)
+;; Convert a cell coordinate to world coordinates.
+(defmethod feature-map map-cell2world (cell world-coord)
+  ((-idx1- (-int-)) cell)
+  ((-idx1- (-float-)) world-coord)
+  (let ((cell-offset (idx-sub cell center)))
+    (world-coord 0 (* (scale 0) (- (cell-offset 0))))
+    (world-coord 1 (* (scale 1) (cell-offset 1)))
+    )
+  world-coord
+  )
+
+#? (==> <feature-map> in-bounds <cell>)
+;; Test if cell is within the map area.
+(defmethod feature-map in-bounds (cell)
+  ((-idx1- (-int-)) cell)
+  (and (and (>= (cell 0) 0) (>= (cell 1) 0))
+       (and (< (cell 0) (full-dim 0)) (< (cell 1) (full-dim 1))))
+  )
+
+;; Cost map infinite cost marked where there are no observations.
+(defconstant "COST_MAP_INF_COST" 9999)
+
+#? cost-map
+;; A cost-map is a feature-map with a single value per entry indicating
+;; the cost of the cell in the map.
+(defclass cost-map feature-map)
+
+#? (new cost-map <fm>)
+;; Construct a cost-map from an existing feature-map <fm>.
+(defmethod cost-map cost-map (fm)
+  ((-obj- (feature-map)) fm)
+  (==> this feature-map :fm:half-dim :fm:scale 1)
+  (setq center :fm:center)
+  (setq pcl-density :fm:pcl-density)
+  this
+  )
+
+#?  (xyz2feature-map <xyz> <transform> <fm>)
+;; Fill in feature map for each map cell using the point cloud <xyz>
+;;   Features:
+;;   [0] - Number of points.
+;;   [1] - Sum of heights.
+;;   [2] - Sum of squared heights.
+(de xyz2feature-map (xyz transform fm)
+  ((-idx2- (-float-)) xyz)
+  ((-idx2- (-float-)) transform)
+  ((-obj- (feature-map)) fm)
+  (let ((map-cell [i 0 0])               ;; Target cell for xyz point.
+        (xyzw (float-matrix-nc 4))       ;; Source xyz point.
+        (xyz-tform (float-matrix-nc 4))  ;; Transformed xyz point.
+        )
+    (idx-clear :fm:data)
+    (xyzw 3 1)
+    ;; Compute density.
+    (setq :fm:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
+    ;;(printf ":fm:pcl-density %f\n" :fm:pcl-density)
+    ;; For all point cloud points.
+    (idx-bloop ((xyz xyz))
+      ;; Transform to robot world.
+      (idx-changedim xyzw 0 3) (idx-copy xyz xyzw) (idx-changedim xyzw 0 4)
+      (idx-m2dotm1 transform xyzw xyz-tform)
+      ;; Find target cell.
+      (==> fm world2map-cell xyz-tform map-cell)
+      ;; Check cell in bounds.
+      (if (==> fm in-bounds map-cell)
+        (let ((h (* -1 (xyz-tform 2))))
+          ;; Increment count.
+          (:fm:data (map-cell 0) (map-cell 1) 0
+            (+ (:fm:data (map-cell 0) (map-cell 1) 0) 1))
+          ;; Sum height.
+          (:fm:data (map-cell 0) (map-cell 1) 1
+            (+ (:fm:data (map-cell 0) (map-cell 1) 1) h))
+          ;; Sum square height.
+          (:fm:data (map-cell 0) (map-cell 1) 2
+            (+ (:fm:data (map-cell 0) (map-cell 1) 2) (* h h)))
+          )
+        ()
+        )
+      )
+    )
+  fm
+  )
+
+#? (feature-map2cost-map <fm-data> <cm-data>)
+;; Compute the cost-map for the given feature map.
+(de feature-map2cost-map (fm-data cm-data)
+  ((-idx3- (-float-)) fm-data)
+  ((-idx3- (-float-)) cm-data)
+  (idx-bloop ((cell-r fm-data) (cost-r cm-data))
+    (idx-bloop ((cell cell-r) (cost cost-r))
+      (let ((num (cell 0))
+            (sum_x (cell 1))
+            (sum_xx (cell 2)))
+        ;; Store infinite cost for no points.
+        (if (= 0 num)
+          (cost 0 @COST_MAP_INF_COST)
+
+          ;; Else store average height plus variance.
+          ;; Var = ((Sum(X_i^2) - (2 * Mu * Sum(X_i))) / N) + Mu^2
+          (let* ((mu (/ sum_x num))
+                 (var (+ (/ (- sum_xx (* 2 (* mu sum_x))) num) (* mu mu))))
+              (cost 0 (+ (abs mu) var))
+            )
+          )
+        )
+      )
+    )
+  ()
+  )
+
+#? (cost-map2rgb <max-cost> <cm> <cm-rgb>)
+;; Convert the cost-map into a display image.
+(de cost-map2rgb (max-cost cm cm-rgb)
+  ((-float-) max-cost)
+  ((-obj- (cost-map)) cm)
+  ((-idx3- (-int-)) cm-rgb)
+  (idx-bloop ((cost-r :cm:data) (cost-rgb-r cm-rgb))
+    (idx-bloop ((cost cost-r) (cost-rgb cost-rgb-r))
+      (if (not (= @COST_MAP_INF_COST (cost 0)))
+        ;; Shade of gray based on cost in range [0, max-cost].
+        (let* ((color (min 255 (max 0 (* (/ (cost 0) max-cost) 255)))))
+          (idx-bloop ((rgb cost-rgb)) (rgb color))
+          )
+        ;; Else blue.
+        (idx-copy [i 0 0 255] cost-rgb)
+        )
+      )
+    )
+  cm-rgb
+  )
+
+(dhc-make-with-c++ () ()
+  (feature-map
+    feature-map
+    world2map-cell
+    map-cell2world
+    in-bounds
+    )
+  (cost-map
+    cost-map
+    )
+  xyz2feature-map
+  feature-map2cost-map
+  cost-map2rgb
+  )
+

@@ -88,7 +88,7 @@ struct RosLushRobotPoseEkf
   typedef RobotPoseEkfData lush_convert_type;
   inline static const char* TopicStr()
   {
-    return "/robot_pose_ekf/odom";
+    return "/robot_pose_ekf/odom_combined";
   }
   inline static void CopyMsgData(const msg_type::ConstPtr& msg,
                                  lush_convert_type* data)

@@ -140,6 +140,10 @@
 (setq c-include-path (cons (concat (rospath "nav_msgs")
                            "/msg_gen/cpp/include") c-include-path))
 
+#? turtlebot-c2v
+;; Transformation from Kinect to Turtlebot base.
+(defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.25] [0 0 0 1]])
+
 #? (turtlebot-dummy)
 ;; Setup global includes for turtlebot.
 (de turtlebot-dummy ()
@@ -203,10 +207,13 @@
 #? (==> <turtlebot> update-camera-depth-image-raw)
 ;; Update the camera depth image_raw subscriber.
 (defmethod turtlebot update-camera-depth-image-raw ()
-  (to-int #{
-     $client->Update<CameraDepthImageRawSubscriber>(IDX_PTR($camera_depth_image_raw,
-                                                            int_least16_t))
-     #})
+  (let ((result -1)) ((-int-) result)
+    #{typedef CameraDepthImageRawSubscriber::lush_convert_type DataType;
+      DataType* data = IDX_PTR($camera_depth_image_raw, int_least16_t);
+      $result = $client->Update<CameraDepthImageRawSubscriber>(data);
+      #}
+    result
+    )
   )
 
 #? (==> <turtlebot> start-sub-odom)
@@ -218,15 +225,18 @@
 #? (==> <turtlebot> update-odom)
 ;; Update the odometry subscriber.
 (defmethod turtlebot update-odom ()
-  (to-int #{
-     $client->Update<OdomSubscriber>(
-       &OdomSubscriber::lush_convert_type(IDX_PTR($odom_pose_position, double),
-                                          IDX_PTR($odom_pose_orientation, double),
-                                          IDX_PTR($odom_pose_covariance, double),
-                                          IDX_PTR($odom_twist_linear, double),
-                                          IDX_PTR($odom_twist_angular, double),
-                                          IDX_PTR($odom_twist_covariance, double)))
-     #})
+  (let ((result -1)) ((-int-) result)
+    #{typedef OdomSubscriber::lush_convert_type DataType;
+      DataType data(IDX_PTR($odom_pose_position, double),
+                    IDX_PTR($odom_pose_orientation, double),
+                    IDX_PTR($odom_pose_covariance, double),
+                    IDX_PTR($odom_twist_linear, double),
+                    IDX_PTR($odom_twist_angular, double),
+                    IDX_PTR($odom_twist_covariance, double));
+      $result = $client->Update<OdomSubscriber>(&data);
+      #}
+    result
+    )
   )
 
 #? (==> <turtlebot> start-sub-robot-pose-ekf)
@@ -238,12 +248,15 @@
 #? (==> <turtlebot> update-robot-pose-ekf)
 ;; Update the robot-pose-ekf subscriber.
 (defmethod turtlebot update-robot-pose-ekf ()
-  (to-int #{
-     $client->Update<RobotPoseEkfSubscriber>(
-       &RobotPoseEkfSubscriber::lush_convert_type(IDX_PTR($robot_pose_ekf_position, double),
-                                                  IDX_PTR($robot_pose_ekf_orientation, double),
-                                                  IDX_PTR($robot_pose_ekf_covariance, double)))
-     #})
+  (let ((result -1)) ((-int-) result)
+    #{typedef RobotPoseEkfSubscriber::lush_convert_type DataType;
+      DataType data(IDX_PTR($robot_pose_ekf_position, double),
+                    IDX_PTR($robot_pose_ekf_orientation, double),
+                    IDX_PTR($robot_pose_ekf_covariance, double));
+      $result = $client->Update<RobotPoseEkfSubscriber>(&data);
+      #}
+    result
+    )
   )
 
 #? (==> <turtlebot> start-sub-camera-depth-points)
@@ -255,17 +268,16 @@
 #? (==> <turtlebot> update-camera-depth-points)
 ;; Update the camera depth points subscriber.
 (defmethod turtlebot update-camera-depth-points ()
-  (let ((num-points [i 0]) (res 0))
+  (let ((result 0)(num-points 0))
+    ((-int-) result)
+    ((-int-) num-points)
     ;; Fetch point data then resize the structure for this frame.
-    (setq res
-       (to-int #{
-         $client->Update<CameraDepthPointsSubscriber>(
-           &CameraDepthPointsSubscriber::lush_convert_type(IDX_PTR($camera_depth_points, float),
-                                                           IDX_PTR($num_points, int)))
-         #})
-     )
-    (idx-changedim camera-depth-points 0 (num-points 0))
-    res
+    #{typedef CameraDepthPointsSubscriber::lush_convert_type DataType;
+      DataType data(IDX_PTR($camera_depth_points, float), &$num_points);
+      $result = $client->Update<CameraDepthPointsSubscriber>(&data);
+      #}
+    (idx-changedim camera-depth-points 0 num-points)
+    result
     )
   )
 

@@ -1,0 +1,335 @@
+;; Prototype file for demos/blr.
+(libload "feature-map")
+(libload "turtlebot/turtlebot")
+(libload "libc/constants")
+(libload "idx-float")
+
+#? (prototype-cpp-dummy)
+;; Load cpp includes.
+(de prototype-cpp-dummy ()
+  (cpheader "#include \"turtlebot/turtlebot.h\"")
+  ())
+
+#? time-counter
+;; A simple timer. Counts seconds since instantiation.
+(defclass time-counter object
+  ((-double-) tstart)
+  )
+
+#? (==> <time-counter> now)
+;; The current time.
+(defmethod time-counter now ()
+  (let ((tnow 0))
+   ((-double-) tnow)
+   (cpheader "#include <sys/time.h>")
+   #{
+     {
+       struct timeval tv;
+       gettimeofday (&tv, NULL);
+       $tnow = ((double) tv.tv_sec) + ((double) tv.tv_usec) / 1.0e6;
+     }
+     #}
+    tnow
+    )
+  )
+
+#? (==> <time-counter> reset)
+;; Reset elapsed to zero.
+(defmethod time-counter reset ()
+  (setq tstart (==> this now))
+  )
+
+#? (new time-counter)
+;; Create a time-counter.
+(defmethod time-counter time-counter ()
+  (==> this reset)
+  )
+
+#? (==> <time-counter> elapsed)
+;; Time elapsed in seconds.
+(defmethod time-counter elapsed ()
+  (let ((tnow (==> this now)))
+    (- tnow tstart)
+    )
+  )
+
+#? (quaternion2matrix <q> <m>)
+;; Convert a quaternion to a rotation matrix.
+(de quaternion2matrix (q m)
+  ((-idx1- (-float-)) q)
+  ((-idx2- (-float-)) m)
+  (let ((qq (idx-mul q q)))
+    (m 0 0 (- (- (+ (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 1 1 (- (+ (- (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 2 2 (+ (- (- (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 0 1 (* 2 (- (* (q 0) (q 1)) (* (q 3) (q 2)))))
+    (m 0 2 (* 2 (+ (* (q 3) (q 1)) (* (q 0) (q 2)))))
+    (m 1 0 (* 2 (+ (* (q 0) (q 1)) (* (q 3) (q 2)))))
+    (m 1 2 (* 2 (- (* (q 1) (q 2)) (* (q 3) (q 0)))))
+    (m 2 0 (* 2 (- (* (q 0) (q 2)) (* (q 3) (q 1)))))
+    (m 2 1 (* 2 (+ (* (q 3) (q 0)) (* (q 1) (q 2)))))
+    )
+  m
+  )
+
+#? (xyz2global-feature-map <xyz> <odom-pos> <odom-orien> <transform> <fm-global> <fm-local>)
+;; Fill in feature map for each map cell using the point cloud <xyz> where
+;; the feature-map is situated within the global map.
+;;   Features:
+;;   [0] - Number of points.
+;;   [1] - Sum of heights.
+;;   [2] - Sum of squared heights.
+;;   [3] - Last-seen time.
+;;
+;; Returns the center pixel coordinate in global-map space of the feature-map.
+(de xyz2global-feature-map (xyz odom-pos odom-orien transform fm-global fm-local)
+  ((-idx2- (-float-)) xyz)
+  ((-idx1- (-float-)) odom-pos)
+  ((-idx1- (-float-)) odom-orien)
+  ((-idx2- (-float-)) transform)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (feature-map)) fm-local)
+  ;; Place the feature map center pixel on the pixel closest to the
+  ;; robot center in the global map. Compute the offset from the pixel
+  ;; center to the robot center and compute the feature map using that
+  ;; offset when transforming the point cloud.
+  (let* ((global-cell [i 0 0])                    ;; Robot position in global map.
+         (global-cell-world (float-matrix-nc 2))  ;; Global cell in world coordinates.
+         (global-cell-offset (float-matrix-nc 2)) ;; Offset from cell pixel center to robot.
+         (global-mat-cell (float-matrix 4 4))     ;; Matrix relative to global-cell-world.
+         (transform-full (float-matrix-nc 4 4))   ;; Matrix used to transform point cloud.
+         (map-cell [i 0 0])                       ;; Target cell for xyz point.
+         (xyzw [f 0 0 0 1])                       ;; Source xyz point.
+         (xyzw-v3 (narrow xyzw 0 3 0))            ;; 3d view of xyzw for copying.
+         (xyz-tform (float-matrix-nc 4))          ;; Transformed xyz point.
+         (odom-pos-v2 (narrow odom-pos 0 2 0))    ;; 2d view of odom-pos (z=0 plane).
+         )
+    
+    ;; Compute map cell for robot position in global map.
+    (==> fm-global world2map-cell odom-pos global-cell)
+    ;; Get pixel center for global-cell in world coordinates.
+    (==> fm-global map-cell2world global-cell global-cell-world)
+    (idx-sub odom-pos-v2 global-cell-world global-cell-offset)
+    ;; Setup global rotation matrix using odom-orien.
+    (global-mat-cell 3 3 1)
+    (quaternion2matrix odom-orien global-mat-cell)
+    (global-mat-cell 0 3 (+ (* (global-cell-offset 0) (global-mat-cell 0 0))
+                            (* (global-cell-offset 1) (global-mat-cell 0 1))))
+    (global-mat-cell 1 3 (+ (* (global-cell-offset 0) (global-mat-cell 1 0))
+                            (* (global-cell-offset 1) (global-mat-cell 1 1))))
+    ;; Transformation order: global-mat-cell * transform * xyz
+    (idx-m2timesm2 global-mat-cell transform transform-full)
+    (idx-clear :fm-local:data)
+    ;; Compute density.
+    (setq :fm-local:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
+    ;; For all point cloud points.
+    (idx-bloop ((xyz xyz))
+      ;; Transform to robot world.
+      (idx-copy xyz xyzw-v3)
+      (idx-m2dotm1 transform-full xyzw xyz-tform)
+      ;; Find target cell.
+      (==> fm-local world2map-cell xyz-tform map-cell)
+      ;; Check cell in bounds.
+      (if (==> fm-local in-bounds map-cell)
+        (let ((h (* -1 (xyz-tform 2))))
+          ;; Increment count.
+          (:fm-local:data (map-cell 0) (map-cell 1) 0
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 0) 1))
+          ;; Sum height.
+          (:fm-local:data (map-cell 0) (map-cell 1) 1
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 1) h))
+          ;; Sum square height.
+          (:fm-local:data (map-cell 0) (map-cell 1) 2
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 2) (* h h)))
+          )
+        ()
+        )
+      )
+    global-cell
+    )
+  )
+
+;; Time to live for a feature observation.
+(defconstant "COST_MAP_GLOBAL_TTL_SECONDS" 120)
+
+#? (de fm-global-decay <fm-global> <cm-global> <cm-global-rgb> <ttl-seconds> <time-now>)
+;; Decay a global feature map and cost map with rgb optimiations.
+(de fm-global-decay (fm-global cm-global cm-global-rgb ttl-seconds time-now)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (cost-map)) cm-global)
+  ((-idx3- (-int-)) cm-global-rgb)
+  ((-float-) ttl-seconds)
+  ((-float-) time-now)
+  (let* ((time-cutoff (- time-now ttl-seconds)))
+    (idx-pbloop ((fm-r :fm-global:data)(cm-r :cm-global:data)(cm-rgb-r cm-global-rgb))
+      (idx-bloop ((fm fm-r)(cm cm-r)(cm-rgb cm-rgb-r))
+        ;; Reset point when last-seen time is too old.
+        (if (< (fm 3) time-cutoff)
+          (progn (idx-clear fm)
+                 ;; reissb -- 20120201 -- Can't get inifinity to compile.
+                 (fm 3 9999999999.1)
+                 (cm 0 @COST_MAP_INF_COST)
+                 (idx-copy [i 0 0 255] cm-rgb)
+                 )
+          )
+        )
+      )
+    )
+  )
+
+;; Exponential moving average weight used to blend new observations into the
+;; global feature map.
+(defconstant "COST_MAP_GLOBAL_EXP_MOV_AVG_WT" 0.9)
+
+;; Take a local feature map and integrate it into a global feature map.
+(de fm-global-update (fm-global cm-global cm-global-rgb fm-global-cell fm-local time-now)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (cost-map)) cm-global)
+  ((-idx3- (-int-)) cm-global-rgb)
+  ((-idx1- (-int-)) fm-global-cell)
+  ((-obj- (feature-map)) fm-local)
+  ((-float-) time-now)
+  ;; Decay the global feature map.
+  (fm-global-decay fm-global cm-global cm-global-rgb @COST_MAP_GLOBAL_TTL_SECONDS time-now)
+  ;; Integrate fm-local into fm-global.
+  (let ((ul (idx-sub fm-global-cell :fm-local:half-dim))
+        (lr (idx-add fm-global-cell :fm-local:half-dim))
+        (roi (int-matrix-nc 4))
+        (mask-rows 0)
+        (mask-cols 0)
+        )
+    (roi 0 (max (ul 0) 0))
+    (roi 1 (max (ul 1) 0))
+    (roi 2 (min (lr 0) (:fm-global:full-dim 0)))
+    (roi 3 (min (lr 1) (:fm-global:full-dim 1)))
+    (setq mask-rows (+ (- (roi 2) (roi 0)) 1))
+    (setq mask-cols (+ (- (roi 3) (roi 1)) 1))
+    ;; Make sure that mask is in bounds.
+    (if (or (<= mask-rows 0) (<= mask-cols 0))
+      () ;; Do nothing when mask is out of bounds.
+
+      ;; Mask fm-global, cm-global and integrate fm-local.
+      (let ((fm-global-mask
+              (narrow (narrow :fm-global:data 0 mask-rows (ul 0)) 1 mask-cols (ul 1)))
+            (cm-global-mask
+              (narrow (narrow :cm-global:data 0 mask-rows (ul 0)) 1 mask-cols (ul 1)))
+           )
+        ;; TODO(reissb) -- Clip fm-local.
+        (idx-pbloop ((fm-global-r fm-global-mask)(fm-local-r :fm-local:data))
+          (idx-bloop ((fm-g fm-global-r)(fm-l fm-local-r))
+            ;; Weighted average of the features.
+            (if (= (fm-l 0) 0)
+              () ;; Do nothing when there is no data (already decayed).
+
+              (let ((fm-g-v3 (narrow fm-g 0 3 0)))
+                ;; See if this is the first update.
+                (if (= (fm-g 0) 0)
+                  ;; No average for first update.
+                  (idx-copy fm-l fm-g-v3)
+                  ;; Else average.
+                  (let ((prev-data-wt (- 1.0 @COST_MAP_GLOBAL_EXP_MOV_AVG_WT))
+                        (update-data-weighted (float-matrix-nc 3))
+                        )
+                    ;; Exponential moving average.
+                    (idx-f1dotc fm-l @COST_MAP_GLOBAL_EXP_MOV_AVG_WT update-data-weighted)
+                    (idx-f1dotc fm-g-v3 prev-data-wt fm-g-v3)
+                    (idx-add fm-g-v3 update-data-weighted fm-g-v3)
+                    )
+                  )
+                ;; Update last-seen time.
+                (fm-g 3 time-now)
+                )
+              )
+            )
+          )
+        ;; Compute global cost map.
+        (feature-map2cost-map fm-global-mask cm-global-mask)
+        )
+      )
+    )
+  )
+
+(de xyz2global-feature-map-test (tb n)
+  (==> tb start-sub-camera-depth-points)
+  (==> tb start-sub-robot-pose-ekf)
+;;  (==> tb start-sub-odom)
+  ;; Create feature, cost, and cost rgb maps.
+  (let* ((scale [f 0.05 0.05])
+         (fm-global (new feature-map [i 300 300] scale 4))
+         (cm-global ())
+         (cm-global-rgb ())
+         (fm-local (new feature-map [i 65 65] scale 3))
+         (cm-local ())
+         (cm-local-rgb ())
+         (fm-global-cell ())
+         (tmr (new time-counter))
+         )
+    (idx-pbloop ((fm-global-r :fm-global:data))
+      (idx-bloop ((fm-g fm-global-r))
+        (fm-g 3 (- (infinity)))
+        )
+      )
+    ;; Setup cost maps.
+    (idx-copy :fm-global:half-dim :fm-global:center)
+    (setq cm-global (new cost-map fm-global))
+    (setq cm-global-rgb (int-matrix (:cm-global:full-dim 0) (:cm-global:full-dim 1) 3))
+    (idx-copy :fm-local:half-dim :fm-local:center)
+    (setq cm-local (new cost-map fm-local))
+    (setq cm-local-rgb (int-matrix (:cm-local:full-dim 0) (:cm-local:full-dim 1) 3))
+    ;; Place feature map center.
+    ;; Create properly sized window if it doesn't exist.
+    (if (not window) (
+      let ((wnd-width 0)(wnd-height 0))
+        (setq wnd-width (+ (idx-dim cm-global-rgb 1) (idx-dim cm-local-rgb 1)))
+        (setq wnd-height (idx-dim cm-global-rgb 0))
+        (new-window 0 0 wnd-width wnd-height)
+        )
+      )
+    ;; Do n loops of processing.
+    (for (i 0 (- n 1))
+      ;; Grab new data.
+      (while (< (==> tb update-robot-pose-ekf) 0) ())
+;;      (while (< (==> tb update-odom) 0) ())
+      (while (< (==> tb update-camera-depth-points) 0) ())
+      ;; Convert points to feature map.
+      (let ((odom-pos (float-matrix-nc 3))
+            (odom-orien (float-matrix-nc 4))
+           )
+        (idx-copy :tb:robot-pose-ekf-position odom-pos)
+        (idx-copy :tb:robot-pose-ekf-orientation odom-orien)
+;;        (idx-copy :tb:odom-pose-position odom-pos)
+;;        (idx-copy :tb:odom-pose-orientation odom-orien)
+        ;; Flip the angle.
+        (odom-orien 3 (- (odom-orien 3)))
+        (setq fm-global-cell (xyz2global-feature-map :tb:camera-depth-points
+                                                     odom-pos odom-orien
+                                                     turtlebot-c2v fm-global fm-local))
+        )
+      (progn (feature-map2cost-map :fm-local:data :cm-local:data)
+             (setq :cm-local:pcl-density :fm-local:pcl-density))
+      ;; Update global map (with cost map rgb optimizations).
+      (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr elapsed))
+      ;; Prepare for display.
+      (cost-map2rgb 0.5 cm-global cm-global-rgb)
+      (cost-map2rgb 0.5 cm-local cm-local-rgb)
+      ;; Draw maps.
+      (rgb-draw-matrix 0 0 cm-global-rgb 1 1)
+      (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1)
+      )
+    )
+  )
+
+(dhc-make-with-c++ () ()
+  prototype-cpp-dummy
+  (time-counter
+    now
+    reset
+    time-counter
+    elapsed
+    )
+  quaternion2matrix
+  xyz2global-feature-map
+  fm-global-decay
+  fm-global-update
+  )
+
