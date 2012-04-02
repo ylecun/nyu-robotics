@@ -2,6 +2,7 @@
 (libload "feature-map")
 (libload "turtlebot/turtlebot")
 (libload "libc/constants")
+(libload "libc/stopwatch")
 (libload "idx-float")
 
 #? (prototype-cpp-dummy)
@@ -9,49 +10,6 @@
 (de prototype-cpp-dummy ()
   (cpheader "#include \"turtlebot/turtlebot.h\"")
   ())
-
-#? time-counter
-;; A simple timer. Counts seconds since instantiation.
-(defclass time-counter object
-  ((-double-) tstart)
-  )
-
-#? (==> <time-counter> now)
-;; The current time.
-(defmethod time-counter now ()
-  (let ((tnow 0))
-   ((-double-) tnow)
-   (cpheader "#include <sys/time.h>")
-   #{
-     {
-       struct timeval tv;
-       gettimeofday (&tv, NULL);
-       $tnow = ((double) tv.tv_sec) + ((double) tv.tv_usec) / 1.0e6;
-     }
-     #}
-    tnow
-    )
-  )
-
-#? (==> <time-counter> reset)
-;; Reset elapsed to zero.
-(defmethod time-counter reset ()
-  (setq tstart (==> this now))
-  )
-
-#? (new time-counter)
-;; Create a time-counter.
-(defmethod time-counter time-counter ()
-  (==> this reset)
-  )
-
-#? (==> <time-counter> elapsed)
-;; Time elapsed in seconds.
-(defmethod time-counter elapsed ()
-  (let ((tnow (==> this now)))
-    (- tnow tstart)
-    )
-  )
 
 #? (quaternion2matrix <q> <m>)
 ;; Convert a quaternion to a rotation matrix.
@@ -262,7 +220,7 @@
          (cm-local ())
          (cm-local-rgb ())
          (fm-global-cell ())
-         (tmr (new time-counter))
+         (tmr (new stopwatch))
          )
     (idx-pbloop ((fm-global-r :fm-global:data))
       (idx-bloop ((fm-g fm-global-r))
@@ -308,7 +266,7 @@
       (progn (feature-map2cost-map :fm-local:data :cm-local:data)
              (setq :cm-local:pcl-density :fm-local:pcl-density))
       ;; Update global map (with cost map rgb optimizations).
-      (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr elapsed))
+      (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr get))
       ;; Prepare for display.
       (cost-map2rgb 0.5 cm-global cm-global-rgb)
       (cost-map2rgb 0.5 cm-local cm-local-rgb)
@@ -321,12 +279,6 @@
 
 (dhc-make-with-c++ () ()
   prototype-cpp-dummy
-  (time-counter
-    now
-    reset
-    time-counter
-    elapsed
-    )
   quaternion2matrix
   xyz2global-feature-map
   fm-global-decay
