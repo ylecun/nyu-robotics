@@ -1,0 +1,86 @@
+;;;
+;;;
+;;;
+;;;  Opencv implemented of surf algorithm
+;;;  using in visual odometry of kinect.
+;;; 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(libload "libidx/idx-int")
+(libload "cv-config2")
+
+
+
+#? (surf-match <img1> <img2> <minHessian>)
+;; Surf algorithm
+;; Set minHessian=400 for best performance, increase 
+;; the SURF hessian threshold will reduce the number 
+;; of detected features.
+;; Return <n>X<4> stored matched points position 
+(de surf-match (img1 img2 mH)
+  ((-idx3- (-ubyte-)) img1)
+  ((-idx3- (-ubyte-)) img2)
+  ((-int-) mH)
+  (let* ((width (idx-dim img1 1))
+	 (height (idx-dim img1 0))
+	 (channels (idx-dim img1 2))
+	 (match (int-matrix (* width height) 4))
+	 (n 0))
+    #{
+    IplImage* Iplimg1=cvCreateImageHeader(cvSize($width,$height),IPL_DEPTH_8U,$channels);
+    IplImage* Iplimg2=cvCreateImageHeader(cvSize($width,$height),IPL_DEPTH_8U,$channels);
+    cvSetImageData(Iplimg1,IDX_PTR($img1,unsigned char),$width*$channels*sizeof(unsigned char));
+    cvSetImageData(Iplimg2,IDX_PTR($img2,unsigned char),$width*$channels*sizeof(unsigned char));
+    
+    SurfFeatureDetector detector($mH);
+    SurfDescriptorExtractor extractor;
+    FlannBasedMatcher matcher;
+    std::vector<KeyPoint> keypoints1, keypoints2;
+    Mat descriptors1, descriptors2;
+    std::vector< DMatch > matches;
+    
+    Mat image1, image2;
+    image1=Iplimg1;
+    image2=Iplimg2;
+    
+    detector.detect( image1, keypoints1 );
+    detector.detect( image2, keypoints2 );
+    extractor.compute( image1, keypoints1, descriptors1 );
+    extractor.compute( image2, keypoints2, descriptors2 );
+    matcher.match( descriptors1, descriptors2, matches );
+
+    $n=matches.size();
+    #}
+    (idx-i2resize match n 4)
+    (cidx-bloop ("i" ("match" match))
+		#{
+		int i1=matches[i].queryIdx;
+		int i2=matches[i].trainIdx;
+		const KeyPoint &kp1=keypoints1[i1];
+		const KeyPoint &kp2=keypoints2[i2];
+		Point2f pt1=kp1.pt;
+		Point2f pt2=kp2.pt;
+
+		match[0]=pt1.x;
+		match[1]=pt1.y;  
+		match[2]=pt2.x;
+		match[3]=pt2.y;
+		#})
+    match)
+)
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make-with-c++
+   () 
+   cv-libs
+   #{
+   #include <vector>
+   #include <opencv/cv.h>
+   #include <opencv2/features2d/features2d.hpp>
+
+   using namespace cv;
+   #}
+   surf-match
+)
