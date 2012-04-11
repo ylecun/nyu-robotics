@@ -1,0 +1,197 @@
+;;;
+;;;
+;;;
+;;;  Odometry for roomba
+;;;
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+
+(libload "roomba/roomba")
+(libload "opencv2/cv-surf")
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;(defconstant gyro-calibration 150)
+
+#?
+;;
+;;
+(defclass odometry-node object
+    ((-float-) x y angle)
+)
+
+
+#?
+;;
+;;
+(defmethod odometry-node odometry-node (xx yy aa)
+  (setq x xx)
+  (setq y yy)
+  (setq angle aa)
+)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defclass odometry object
+  node-list
+)
+
+
+(defmethod odometry odometry (px py pa)
+  (setq node-list ())
+  (let ((node (new odometry-node px py pa)))
+      (setq node-list (cons node node-list))) 
+)
+
+
+#?
+;;
+;;
+(defmethod odometry get-position-x ()
+  (let* ((node (car node-list))
+	 (xx :node:x))
+    xx)
+)
+
+
+#?
+;;
+;;
+(defmethod odometry get-position-y ()
+  (let* ((node (car node-list))
+	 (yy :node:y))
+    yy)
+)
+
+
+#?
+;;
+;;
+(defmethod odometry get-position-angle ()
+  (let* ((node (car node-list))
+	 (aa :node:angle))
+    aa)
+)
+
+
+
+#? (odometry wheel-update <robot>) 
+;;
+;;
+(defmethod odometry wheel-update (rb)
+  (==> rb read-sensors 0)
+  (let* ((angle (==> rb angle))
+	 (distance (==> rb distance))
+	 (new-node ())
+	 (last-node (car node-list))
+	 (xx :last-node:x)
+	 (yy :last-node:y)
+	 (aa :last-node:angle))
+    ;;normalize to signed int
+    (setq distance 
+	  (if (> distance 32767) 
+	      (- distance 65535)
+	    distance))
+    (setq angle 
+	  (if (> angle 32767)
+	      (- angle 65535)
+	    angle))
+    ;;normalize to degree
+    (setq angle (double (/ (* angle 360) 258)))
+    ;;(print angle distance)
+    (print xx yy aa)
+    (setq new-node (new odometry-node 
+			(+ xx (* distance (cos (* (/ angle 180) 3.14))))
+			(+ yy (* distance (sin (* (/ angle 180) 3.14))))
+			(+ aa angle)))
+    (setq node-list (cons new-node node-list))
+    ;;(print (length node-list))
+  ())
+)
+  
+
+#? (odometry gyrp-update <rb>) 
+;;
+;;
+(defmethod odometry gyro-update (rb)
+  (==> rb read-sensors 6)
+  (let* ((rotation (==> rb analog-signal)))
+    (setq rotation (/ rotation gyro-const))
+    (print rotation)
+    ())
+)  
+
+
+
+#? (odometry vo-surf-update <image> <image-old> <rgbxyz>) 
+;; Video odometry using surf algorithm
+;;
+(defmethod odometry vo-surf-update (image image-old rgbxyz)
+  (let* ((matched (surf-match image image-old 400))
+	 (n (idx-dim matched 0))
+	 (angle 0))
+    (idx-bloop ((matched matched))
+      (let ((x1 (rgbxyz (matched 1) (matched 0) 4))
+	    (y1 (rgbxyz (matched 1) (matched 0) 5))
+	    (z1 (rgbxyz (matched 1) (matched 0) 6))
+	    (x2 (rgbxyz (matched 3) (matched 2) 4))
+	    (y2 (rgbxyz (matched 3) (matched 2) 5))
+	    (z2 (rgbxyz (matched 3) (matched 2) 6)))
+	(if (or (= 0 (matched 0)) (<> z1 z2)) 
+	    (setq n (1- n))
+	  (let* ((dist1 (sqrt (+ (* x1 x1) (* y1 y1) (* z1 z1))))
+		 (dist2 (sqrt (+ (* x2 x2) (* y2 y2) (* z2 z2))))
+		 (temp (/ (+ (* x1 x2) (* y1 y2) (* z1 z2)) (* dist1 dist2))))
+	  ;;(print dist1 dist2 )
+	  ;;(print (/ (+ (* x1 x2) (* y1 y2) (* z1 z2)) (* dist1 dist2)))
+	    (setq angle (+ angle temp))
+	    ()))))
+    (if (= n 0)
+	(progn (print "error") (setq angle 0))
+      (setq angle (* 180 (acos (/ angle n)))))
+    angle)
+)
+
+
+#? (odometry display <dx> <dy>) 
+;;  
+;;
+(defmethod odometry display (dx dy)
+  ((-int-) dx dy)
+  (let ((node ())
+	(last-xx 0)
+	(last-yy 0)
+	(zoom 1)
+	(xx 0)
+	(yy 0))
+    (when (not window) (new-window dx dy 1000 800 "Odometry"))
+    (when node-list
+      (cls)
+      (setq node (car node-list))
+      (setq xx :node:x)
+      (setq yy :node:y)
+      (if (or (> xx 400) (> yy 400) (< xx 0) (< yy 0))
+	  (progn (setq zoom 1) (setq xx (/ xx zoom)) (setq yy (/ yy zoom))))
+      (draw-circle yy xx 5)
+      (draw-line yy xx (- yy (* 5 (cos (* (/ :node:angle 180))))) (+ xx (* 5 (sin (* (/ :node:angle 180) 3.14)))))
+      (setq last-xx :node:x)
+      (setq last-yy :node:y))
+  ())
+)
+      
+      
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(de odometry-test ()
+  (let ((rb (new roomba "/dev/ttyUSB0")))
+  (==> rb drive -50 0)
+  (let ((od (new odometry 50 50 0)))
+    (while 1
+      (==> od gyro-update rb)
+      ;;(==> od wheel-update rb)
+      ;;(==> od display)
+      (setq angle (==> od get-position-angle))
+      (print angle)
+      ())))
+)

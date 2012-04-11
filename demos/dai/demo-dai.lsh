@@ -1,0 +1,406 @@
+(libload "roomba/roomba")
+(libload "roomba-odometry")
+(libload "freenect/freenect")
+(libload "pcloud/pcloud")
+(libload "pcloud2")
+(libload "astar/a-star-test")
+(libload "opencv2/cv-surf")
+
+;; Main here!
+;; Assume that the kinect is 29cm above ground.
+
+(de demo-dai (&optional roombap)
+  (when (not window) (new-window 0 0 1280 480 "asd"))
+  (let* ((r (when roombap (new roomba "/dev/ttyUSB0")))
+	 (q ())
+	 (od ())
+	 (direction 0.0)
+	 (angle 0.0)
+	 (image-old ())
+	 (d (float-matrix 480 640))
+	 (rgb (float-matrix 307200 3))
+	 (rcd (float-matrix 307200 3))
+	 (xyz (float-matrix 307200 3))
+	 (rgbxyz (float-matrix 480 640 7))
+	 (stop ())
+	 (robot-height 0.45)
+	 (cellsize 0.1)
+	 (costmap-xsize 100)
+	 (costmap-ysize 100)
+	 (mp (float-matrix costmap-xsize costmap-ysize 3))
+	 (costmap (float-matrix costmap-xsize costmap-ysize 2)))
+    ;; turn kinect on.
+    (when r (==> r kinect-on))
+    ;; create freenect object
+    (setq q (new freenect 0))
+    (setq od (new odometry 0 0 0))
+    (setq image-old (==> q get-rgb))
+    ;; infinite loop)
+    (while (not stop)
+      ;;(==> r stop)
+      (==> q update)
+      (let ((image (==> q get-rgb))
+	    (rawd (==> q get-depth)))
+	;;(rgb-draw-matrix 0 0 image)
+	(pcloud-image2rcdrgb image rawd 2000 rcd rgb)
+	(pcloud-rcd2xyz rcd xyz kinect-d2m kinect-rcd2xyz turtlebot-c2v)
+	(idx-clear mp)
+	(pcloud-rgbrcdxyz2rgbxyz rgb rcd xyz rgbxyz)
+	(when r (==> od update r))
+	;;(setq angle (==> od get-position-angle))
+	(setq temp (==> od vo-surf-update image image-old rgbxyz))
+	(print temp)
+	(setq angle (+ angle temp))
+	(print angle)
+	(pcloud-xyz2map xyz rgb mp 50 50 angle cellsize cellsize robot-height)
+	;;(rgb-draw-matrix 0 0 (mark-ground xyz rcd image 0.35 robot-height))
+	;;(get-lowest xyz)
+	(map2cost mp costmap 0.2)
+	;;(add-safe-margin costmap)
+	;;(setq direction 50)
+	;;(setq direction (costmap2planning costmap 0.2 50 50))
+	;;(print direction)
+	;;(when r (drive r direction))
+	;;(process-depth rawd d)
+	;;(rgb-draw-matrix 640 0 d)
+	(display-costmap 640 0 costmap 2)
+	;;(setq matched (surf-match image image-old 400))
+	(setq image-old image)
+	(process-pending-events)
+	))
+    ()))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? (pcloud-xyz2map <xyz> <rgb> <map> <cx> <cy> <cangle> <sx> <sy> <robot-height>)
+;; computes a grid map of point-cloud features <map> from 
+;; a point cloud <xyz> and <rgb>. <map> must be an <nrow>x<ncol>x<3>
+;; idx3 of floats. For each cell, element 0 is the number of points
+;; in the cell, element 1 is the sum of the heights of the points
+;; (z coordinate), and element 2 is the sum of the squares of the 
+;; heights of the points. The robot is at the bottom of the map,
+;; with the X axis going up, and the Y axis going right.
+;; <cx> <cy>: are the row and column indices of the robot
+;; in the map. <sx> and  <sy> are the size of the grid cell.
+;; <robot-height> is the height of the robot. Any point
+;; above that height is ignored.
+;; Update: Add angle display ability! <cangle> is the angle of robot
+(de pcloud-xyz2map (xyz rgb mp cx cy ca sx sy robot-height)
+  ((-float-) cx cy sx sy ca robot-height)
+  ((-idx2- (-float-)) xyz rgb)
+  ((-idx3- (-float-)) mp)
+  (let ((xmax (idx-dim mp 0))
+	(ymax (idx-dim mp 1))
+	(sx1 (/ -1.0 sx))
+	(sy1 (/ 1.0 sy)))
+    (idx-bloop ((xyz xyz) (rgb rgb))
+      ;; compute row and col
+      (let* ((z (xyz 2))
+	     ;;rotate coordinate
+	     (a2 (* ca (/ 3.14 180)))
+	     (x2 (- (* (xyz 0) (cos a2)) (* (xyz 1) (sin a2))))
+	     (y2 (+ (* (xyz 0) (sin a2)) (* (xyz 1) (cos a2))))
+	     ;;move base point
+	     (xx (+ cx (* x2 sx1)))
+	     (yy (+ cy (* y2 sy1)))
+	     (ixx (int xx))
+	     (iyy (int yy)))
+	(when (and (>= xx 0) (< xx xmax) (>= yy 0) (< yy ymax) (< z robot-height))
+	  ;; number of points
+	  (mp ixx iyy 0 (+ (mp ixx iyy 0) 1))
+	  ;; mean height
+	  (mp ixx iyy 1 (+ (mp ixx iyy 1) z))
+	  ;; mean square height
+	  (mp ixx iyy 2 (+ (mp ixx iyy 2) (* z z))))))
+    ()))
+
+
+#? (map2cost <map> <costmap> <default-cost>)
+;; Computed a cost/confidenc map <costmap> from
+;; a pointcloud feature map <map>. This assumes
+;; that <map> is an <sx>x<sy>x<3> array of floats,
+;; where each cell contains the number of points
+;; that falss in the cell, the sum of the heights 
+;; of the points, and the sum of the squares of the
+;; heights. <costmap> is a <sx>x<sy>x<2> array of
+;; floats containing for each cell a cost and a confidence
+;; (which is 0 for empty cells, and 1 for cells in
+;; which the cost is known with confidence).
+;; Empty cells are given the cost <default-cost>.
+(de map2cost (mp im default-cost)
+  ((-idx3- (-float-)) mp)
+  ((-idx3- (-float-)) im)
+  ((-float-) default-cost)
+  (let ((v 0))
+    (idx-bloop ((mp mp) (im im))
+      (idx-bloop ((mp mp) (im im))
+	(if (= 0.0 (mp 0));;no point
+	    (progn (im 0 default-cost)  (im 1 0))
+	  (im 0 (/ (- (mp 1)) (mp 0)));;mean z and turn z to up
+	  (im 1 (min 1.0 (* (mp 0) 100))))))) ())
+
+
+#? (costmap2image <costmap> <images> <max-cost>)
+;; transforms a costmap into a displayable RGB image.
+;; cells with zero confisence are mapped to blue,
+;; Cells with non-zero confidence are mapped to black
+;; for cost 0 and white for cost <max-cost>.
+ (de costmap2image (mp im vv)
+  ((-idx3- (-float-)) mp)
+  ((-idx3- (-ubyte-)) im)
+  ((-float-) vv)
+  (let ((v 0))
+    (idx-bloop ((mp mp) (im im))
+      (idx-bloop ((mp mp) (im im))
+	(if (= 0.0 (mp 1));;no point draw blue
+	    (progn (im 0 0) (im 1 0) (im 2 200))
+	  (if (= 10 (mp 1));;path draw red
+	      (progn (im 0 200) (im 1 0) (im 2 0))
+	    (setq v (min 255 (max 0 (* (/ 255 vv) (mp 0)))))
+	    (im 0 v) (im 1 v) (im 2 v)))))))
+
+#? (display-costmap <x> <y> <costmap> <zoom>)
+;; display a costmap at position <x><y> with <zoom>
+;; factor in the current window.
+(de display-costmap (x y mp zoom)
+  (let ((im (ubyte-matrix (idx-dim mp 0) (idx-dim mp 1) 3)))
+    (costmap2image mp im 0.2)
+    (rgb-draw-matrix x y im zoom zoom)))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? (add-safe-margin <costmap>)
+;;
+;;
+(de add-safe-margin (cp)
+  ((-idx3- (-float-)) cp)
+  (let ((xmax (idx-dim cp 0))(ymax (idx-dim cp 1)))
+    (for (x 0 (1- xmax))
+	 (for (y 0 (1- ymax))
+	      (let ((up 0)(down 0)(right 0)(left 0)(num 5))
+		;;Up 
+		(if (<= y -1)
+		    (progn (setq up 0) (setq num (1- num)))
+		  (setq up (cp x y 0)))
+		;;Down 
+		(if (>= y ymax)
+		    (progn (setq down 0) (setq num (1- num)))
+		  (setq down (cp x y 0)))
+		;;Left
+		(if (<= x -1)
+		    (progn (setq left 0) (setq num (1- num)))
+		  (setq left (cp x y 0)))
+		;;Right 
+		(if (>= x xmax)
+		    (progn (setq right 0) (setq num (1- num)))
+		  (setq right (cp x y 0)))
+		;;(print x y up down left right num)
+		(cp x y 0 (/ (+ up down left right (cp x y 0)) num))
+		;;(print (cp x y 0))
+		))))
+)
+	      
+
+
+
+#? (costmap2planning <costmap> <threshold> <goal_x> <goal_y> <direction>)
+;;
+;;
+(de costmap2planning (mp threshold gx gy)
+  ((-idx3- (-float-)) mp)
+  ;;((-idx3- (-int-)) path)
+  ((-float-) threshold)
+  ((-int-) gx gy)
+  (let ((cmp (float-matrix 100 100)))
+    (idx-bloop ((mp mp) (cmp cmp))
+      (idx-bloop ((mp mp) (cmp cmp))
+	(if (= (mp 1) 0.0)
+	    (cmp 100) 
+	  (if (< (mp 0) threshold)
+	      (cmp (min 255 (max 0 (* (/ 255 0.2) (mp 0)))))
+	    (cmp (min 255 (max 0 (* (/ 255 0.2) (mp 0)))))
+	    ()))))
+    (setq gm (new grid-map cmp))
+    (let ((grid :gm:grid))
+      (setq best-path 
+	    (astar (grid 92 50) (grid gx gy))))
+    (print "planning finished")
+    ;;(pause 1)
+    ;;(==> gm display 640 220 2)
+    ;;Linear least squares
+    (let* ((x 0) (y 0) (xy 0) (x2 0) (imax 10) (dr 0.0))
+      (if (> imax (length best-path))
+	  (setq imax (length best-path)))
+      (for (i 0 imax)
+	   (setq n (nth i best-path))
+	   (setq x (+ x :n:x))
+	   ;;(print x)
+	   (setq y (+ y :n:y))
+	   ;;(print y)
+	   (setq xy (+ xy (* :n:x :n:y)))
+	   (setq x2 (+ x2 (* :n:x :n:x)))
+	   (mp :n:x :n:y 1 10))
+      (setq dr (/
+	       (- (* x y) (* imax xy))
+	       (- (* x x) (* imax x2))))
+      ;;(print dr)
+      dr))
+)
+
+#? (mark-lowest <xyz>)
+;
+;
+(de get-lowest (xyz)
+  ((-idx2- (-float-)) xyz)
+  (let ((map (float-matrix 1000 1000)) ;;resolution 0.01m
+	(lxyz (float-matrix (idx-dim xyz 0))))
+    (idx-bloop ((map map))
+      (idx-bloop ((map map))
+	(map 1000)))
+    (idx-bloop ((xyz xyz))
+      (let ((ixx (int (+ 500 (* 100 (xyz 0)))))
+	    (iyy (int (+ 500 (* 100 (xyz 1)))))
+	    (z (- (xyz 2))))
+	(if (< z (map ixx iyy))
+	    (map ixx iyy z))))
+    map)
+)
+
+
+
+#? (mark-ground <xyz> <rcd> <image> <threshold> <robot-height>)
+;
+;
+(de mark-ground (xyz rcd image th rh)
+  ((-float-) th rh)
+  ((-idx2- (-float-)) xyz rcd)
+  ((-idx3- (-ubyte-)) image)
+  (let* ((imax (idx-dim xyz 0))
+	 (newimage (idx-copy image)))
+    ;;(print imax)
+    (for (i 0 (1- imax))
+	 (let* ((z 0)
+	       (xx 0)
+	       (yy 0))
+	   (setq z (+ rh (- (xyz i 2))))
+	   (setq xx (rcd i 1))
+	   (setq yy (rcd i 0))
+	   (if (< z th)
+	       (newimage yy xx 1 0))))
+    newimage)
+)
+
+#? (drive <roomba> <direction>)
+;
+;
+(de drive (rb dr)
+  ((-float-) dr)
+  (let* ((mid 0.59)
+	 (turn (* -500 (- dr mid))))
+    (print dr turn)
+    (when rb
+    (if (and (< turn 10) (> turn -10))
+	(==> rb forward-at 100)    
+      (==> rb drive 20 0)))
+  ())
+)
+
+#?(roomba-odometry <robot> <traveled-map>)
+;;
+;;
+(de roomba-odometry (robot)
+  (==> robot read-sensors 0)
+  (let ((angle (==> robot angle))
+	(distance (==> robot distance)))
+    (print angle distance)
+    ())
+)
+  
+ 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;Following functions not used!!                                  ;;  
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;#? (map2height <map> <heightmap> <robot-height>)
+;;Transfer to height map 
+;; 
+;;(de map2height (mp hm robot-height)
+;;  ((-idx3- (-float-)) mp)
+;;  ((-idx3- (-float-)) hm)
+;;  ((-float-) robot-height)
+;;  (let ((v 0))
+;;    (idx-bloop ((mp mp) (hm hm))
+;;      (idx-bloop ((mp mp) (hm hm))
+;;	(if (= 0.0 (mp 0));;no point marked as a hole
+;;	    (progn (hm 0 -1) (hm 1 0))
+;;	  (hm 0 (+ (/ (- (mp 1)) (mp 0)) robot-height));;turn to turtlebot base cordinate
+;;	  (hm 1 (min 1.0 (* (mp 0) 100))))))) ())
+;;
+;;
+;;#? (display-heightmap <x> <y> <heightmap> <zoom>)
+;; display a heightmap at position <x><y> with <zoom>
+;; factor in the current window.
+;;(de display-heightmap (x y hm zoom)
+;;  ((-idx3- (-float-)) hm)
+;;  (let ((v 0) 
+;;	(vv 100) 
+;;	(im (ubyte-matrix (idx-dim hm 0) (idx-dim hm 1) 3)))
+;;    (idx-bloop ((hm hm) (im im))
+;;      (idx-bloop ((hm hm) (im im))
+;;	(if (= 0.0 (hm 1));;no point draw blue
+;;	    (progn (im 0 0) (im 1 0) (im 2 200))
+;;	  (setq v (min 255 (max 0 (* vv (hm 0)))))
+;;	  (im 0 v) (im 1 v) (im 2 v))))
+;;  (for (i 0 99)
+;;	 (progn (im i 50 0 200) (im i 50 1 0) (im i 50 2 0)))
+;;    (for (j 0 99)
+;;	 (progn (im 92 j 0 200) (im 92 j 1 0) (im 92 j 2 0)))
+;;    (rgb-draw-matrix x y im zoom zoom))
+;;  ()
+;)
+
+;;(de get-local-target (hm cx cy set-height)
+;;  ((-idx3- (-float-)) hm)
+;;  ((-int-) cx cy)
+;;  (let ((start_x 0)
+;;	(start_y 50)
+;;	(target_x 0)
+;;	(target_y 50))
+;;    (for (i 0 99)
+;;	 (if (and (<> (hm i 50 1) 0.0) (< (hm i 50 0) set-height))
+;;	     (target)
+;;))))
+
+
+;;(de hightmap2planning (hm threshold)
+;;  ((-idx3- (-float-)) hm)
+;;  ((-float-) threshold)
+;;  (let ((cmp (float-matrix 100 100)))
+;;    (idx-bloop ((hm hm) (cmp cmp))
+;;      (idx-bloop ((hm hm) (cmp cmp))
+;;	(if (= (hm 1) 0.0)
+;;	    (cmp 100) 
+;;	  (if (< (hm 0) threshold)
+;;	      (cmp 0)
+;;	    (cmp 50)))))
+;;    (setq gm (new grid-map cmp))
+;;    ;(let ((grid :gm:grid))
+;;      ;(setq best-path 
+;;	    ;(astar (grid 92 50) (grid 85 50))))
+;;    ;(print "planning finished")
+;;    ;;(pause 1)
+;;    (==> gm display 640 220 2)
+;;    ;;(color-rgb 1 0 0)
+;;    ;;(each ((n best-path))
+;;    ;;(fill-rect :n:y :n:x 1 1))
+;;    ())
+;;)
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; compile some of the functions.
+(dhc-make 
+ ()
+ pcloud-xyz2map
+ map2cost
+ costmap2image
+ mark-ground
+ ;;get-lowest
+ ;;costmap2planning
+ )
