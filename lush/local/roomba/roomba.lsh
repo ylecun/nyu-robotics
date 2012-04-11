@@ -30,7 +30,7 @@
 ;; The destructor automatically closes the port.
 (defmethod roomba roomba (portname)
   ((-str-) portname)
-  #{ $roombaptr = (void*)(roomba_init((char *)($portname->data)))); 
+  #{ $roombaptr = (void*)(roomba_init((char *)($portname->data))); 
      if ($roombaptr == NULL) { run_time_error("could not open roomba port"); } 
   #}
   (setq sensors (ubyte-matrix 52))
@@ -141,7 +141,7 @@
     ((-int-) err)
     (idx-u1resize sensors 52)
     #{ $err = roomba_read_sensors((Roomba*)($roombaptr), $group); 
-       memcpy(IDX_PTR($sensors, uint8_t), ((Roomba *)$roombaptr)->sensor_bytes, 26);
+       memcpy(IDX_PTR($sensors, uint8_t), ((Roomba *)$roombaptr)->sensor_bytes, 52);
     #} err))overcurrent
 
 #? (==> <roomba> bumpers)
