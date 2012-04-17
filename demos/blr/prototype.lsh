@@ -139,6 +139,10 @@
 ;; global feature map.
 (defconstant "COST_MAP_GLOBAL_EXP_MOV_AVG_WT" 0.9)
 
+;; Resample a local feature map by solving a least squares optimization.
+(de fm-local-registration (fm-local fm-global fm-global-cell tform-guess)
+  )
+
 ;; Take a local feature map and integrate it into a global feature map.
 (de fm-global-update (fm-global cm-global cm-global-rgb fm-global-cell fm-local time-now)
   ((-obj- (feature-map)) fm-global)
