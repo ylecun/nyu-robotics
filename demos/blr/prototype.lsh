@@ -3,6 +3,7 @@
 (libload "turtlebot/turtlebot")
 (libload "libc/constants")
 (libload "libc/stopwatch")
+(libload "../../lush/lsh/libimage/morpho")
 (libload "idx-float")
 
 #? (prototype-cpp-dummy)
@@ -139,8 +140,123 @@
 ;; global feature map.
 (defconstant "COST_MAP_GLOBAL_EXP_MOV_AVG_WT" 0.9)
 
+;; Erode a byte matrix.
+;;
+;; This is an optimized erosion that does not interpolate borders. It is also
+;; hard-coded to use the 1-pixel cross filter.
+;;
+;; Benchmarks on AMD E-350 APU machine:
+;; ? (setq img (ubyte-matrix 40 40))
+;; ? (setq img-erode (ubyte-matrix 40 40))
+;; ? (cputime (repeat 400000 (erode img img-erode)))
+;; = 8.11
+;; ? (cputime (repeat 400000 (erode img img-erode)))
+;; = 8.09
+;; ? (cputime (repeat 400000 (ubim-erosion img 1)))
+;; = 13.29
+;; ? (cputime (repeat 400000 (ubim-erosion img 1)))
+;; = 13.23
+;; ?
+(de erode (src dst)
+  ((-idx2- (-ubyte-)) src)
+  ((-idx2- (-ubyte-)) dst)
+  ;; Check sizes.
+  (let ((r (idx-dim src 0)) (c (idx-dim src 1)))
+    ((-int-) r) ((-int-) c)
+    (when (or (< r 3) (< c 3))
+      (error "insufficient source image size"))
+    (when (or (<> r (idx-dim dst 0)) (<> c (idx-dim dst 1)))
+      (error "insufficient destination image size"))
+    ;; Erode using column sums. Need solid 9x9.
+    (cpheader "#include <algorithm>")
+    (cpheader "#include <stdint.h>")
+    #{
+      {
+        uint8_t* const dst_begin = IDX_PTR($dst, uint8_t);
+        // Step through rows and columns. Need all sum of 9 to have a pixel.
+        const int row_steps = $r - 2;
+        const int col_steps = $c - 2;
+        for (int r = 0; r < row_steps; ++r)
+        {
+          const uint8_t* src_r0 = (r * $c) + IDX_PTR($src, uint8_t);
+          const uint8_t* src_r1 = src_r0 + $c;
+          const uint8_t* src_r2 = src_r1 + $c;
+          uint8_t* dst_px = dst_begin + (r * $c) + 1;
+          // Initialize column sums.
+          int col_sums[3] = {0};
+          for (int c = 0; c < 3; ++c)
+          {
+            col_sums[c] += *(src_r0 + c) > 0;
+            col_sums[c] += *(src_r1 + c) > 0;
+            col_sums[c] += *(src_r2 + c) > 0;
+          }
+          for (int c = 0;
+               c < col_steps;
+               ++c,
+               // Advance rows.
+               ++src_r0, ++src_r1, ++src_r2,
+               // Shift column sums.
+               col_sums[0] = col_sums[1],
+               col_sums[1] = col_sums[2],
+               col_sums[2] = (*(src_r0 + 2) > 0) + (*(src_r1 + 2) > 0) + (*(src_r2 + 2) > 0),
+               ++dst_px)
+          {
+            const int pixel_sum = (*(src_r1 + 0) > 0) + col_sums[1] + (*(src_r1 + 2) > 0);
+            *dst_px = (5 == pixel_sum);
+          }
+        }
+        // Just black out border.
+        {
+          uint8_t* dst_px;
+          dst_px = dst_begin;
+          for (int c = 0; c < $c; ++c, ++dst_px) { *dst_px = 0; }
+          dst_px = dst_begin + (($r - 1) * $c);
+          for (int c = 0; c < $c; ++c, ++dst_px) { *dst_px = 0; }
+          dst_px = dst_begin;
+          for (int r = 0; r < $r; ++r, dst_px += $c) { *dst_px = 0; }
+          dst_px = dst_begin + $c - 1;
+          for (int r = 0; r < $r; ++r, dst_px += $c) { *dst_px = 0; }
+        }
+      }
+      #}
+    )
+  ()
+  )
+
+#? (erode-test)
+;; Visual test of erosion.
+(de erode-test ()
+  (let* ((img-dim 300)
+         (img       (ubyte-matrix img-dim img-dim))
+         (img-erode (ubyte-matrix img-dim img-dim))
+         (scale 1)
+         )
+    ;; Generate a random image.
+    (idx-bloop ((img-r img)) (idx-bloop ((px img-r)) (px (to-int (+ (rand) 0.1)))))
+    (for (i 1 2) (ubim-dilation img 1))
+    (erode img img-erode)
+    (if (= () window) (new-window 640 480))
+    (cls)
+    (gray-draw-matrix 0                 0 img       0 1 scale scale)
+    (gray-draw-matrix (* scale img-dim) 0 img-erode 0 1 scale scale)
+    )
+  ()
+  )
+
 ;; Resample a local feature map by solving a least squares optimization.
-(de fm-local-registration (fm-local fm-global fm-global-cell tform-guess)
+(de fm-local-registration (fm-local fm-global fm-global-cell rot-guess offset-guess rot offset)
+  ;; Find correspondences by looking in a square neighborhood about the image of
+  ;; significant features in the global map projected into the local map.
+  ;; Define sigificant features by their feature vector
+  ;;   pts mean, pts variance, (TODO) rgb mean, rgb variance
+  (let ((fm-local-mask (apply byte-matrix-nc (idx-dim fl-local)))
+        )
+    ;; Compute edges in local map mask.
+    )
+  ;; Set tform to identity for now.
+  (idx-clear rot)
+  (for (i 1 (idx-dim rot 0)) (rot mat i i 1))
+  (idx-clear offset)
   )
 
 ;; Take a local feature map and integrate it into a global feature map.
@@ -281,11 +397,14 @@
     )
   )
 
-(dhc-make-with-c++ () ()
-  prototype-cpp-dummy
-  quaternion2matrix
-  xyz2global-feature-map
-  fm-global-decay
-  fm-global-update
-  )
+;;(let ((dhc-make-lushflags (concat dhc-make-lushflags " -fopenmp")))
+  (dhc-make-with-c++ () () ;;"/usr/lib/gcc/i486-linux-gnu/4.4/libgomp.so"
+    prototype-cpp-dummy
+    quaternion2matrix
+    xyz2global-feature-map
+    fm-global-decay
+    fm-global-update
+    erode
+    )
+;;  )
 

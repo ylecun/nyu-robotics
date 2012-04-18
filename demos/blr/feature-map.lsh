@@ -297,7 +297,7 @@
       )
 
     ;; Draw the points.
-    (new-window 0 0 (window-size 0) (window-size 1))
+    (if (= () window) (new-window (window-size 0) (window-size 1)))
     (cls)
     (draw-correspondences pts-global pts-local window-center draw-scale)
 

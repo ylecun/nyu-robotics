@@ -37,7 +37,7 @@
 ;;;  11/24/2007  modified by Yann LeCun
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defvar cv-libnames (list "libopencv_core" 
+(defparameter cv-libnames (list "libopencv_core" 
 			  "libopencv_contrib" 
 			  "libopencv_calib3d"
 			  "libopencv_features2d"
@@ -49,12 +49,12 @@
 			  "libopencv_ml"
 			  "libopencv_objdetect"
 			  "libopencv_video"))
-(defvar cv-version ())
-(defvar cv-configured ())
-(defvar cv-libs ())
-(defvar cv-cpheader-cmd ())
-(defvar cv-include-path ())
-(defvar cv-flags "")
+(defparameter cv-version ())
+(defparameter cv-configured ())
+(defparameter cv-libs ())
+(defparameter cv-cpheader-cmd ())
+(defparameter cv-include-path ())
+(defparameter cv-flags "")
 
 (when (not cv-configured)
   
@@ -109,9 +109,9 @@
 
       (setq cv-cpheader-cmd
             '(progn
-               (cheader "#include <cv.h>")
-               (cheader "#include <cvaux.h>")
-               (cheader "#include <cvcompat.h>")
+               (cheader "#include <opencv/cv.h>")
+               (cheader "#include <opencv/cvaux.h>")
+               (cheader "#include <opencv/cvcompat.h>")
                (cheader "#undef ptr") ))
 
       (setq cv-flags " -fno-strict-aliasing -Wno-unused-function") ))
