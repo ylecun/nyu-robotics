@@ -5,6 +5,7 @@
 (libload "libc/stopwatch")
 (libload "../../lush/lsh/libimage/morpho")
 (libload "idx-float")
+(libload "idx-convol")
 
 #? (prototype-cpp-dummy)
 ;; Load cpp includes.
@@ -249,14 +250,81 @@
   ;; significant features in the global map projected into the local map.
   ;; Define sigificant features by their feature vector
   ;;   pts mean, pts variance, (TODO) rgb mean, rgb variance
-  (let ((fm-local-mask (apply byte-matrix-nc (idx-dim fl-local)))
+  (let ((local-r (:fm-local:full-dim 0))
+        (local-c (:fm-local:full-dim 1)) 
+        (global-crop-ul (idx-sub fm-global-cell :fm-local:half-dim))
         )
-    ;; Compute edges in local map mask.
+    (let ((fm-local-mask (ubyte-matrix-nc local-r local-c))
+          (fm-mask-erode (ubyte-matrix-nc local-r local-c))
+          (fm-global-crop (narrow (narrow :fm-global:data 0 local-r (global-crop-ul 0))
+                           1 local-c (global-crop-ul 1)))
+          (fm-global-crop-fea-0 (float-matrix-nc local-r local-c))
+          (fm-global-crop-fea-1 (float-matrix-nc local-r local-c))
+          (fm-global-edge-kernel (float-matrix-nc 3 3))
+          (fm-global-crop-fea-conv-0 (float-matrix-nc (- local-r 2) (- local-c 2)))
+          (fm-global-crop-fea-conv-1 (float-matrix-nc (- local-r 2) (- local-c 2)))
+          (fm-global-crop-edges (float-matrix-nc local-r local-c))
+          )
+      (idx-bloop ((fm-lcl-r :fm-local:data)
+                  (fm-gbl-r fm-global-crop)
+                  (fm-mask-r fm-local-mask)
+                  (fm-gbl-fea-0-r fm-global-crop-fea-0)
+                  (fm-gbl-fea-1-r fm-global-crop-fea-1)
+                  )
+        (idx-bloop ((fm-lcl fm-lcl-r)
+                    (fm-gbl fm-gbl-r)
+                    (fm-mask fm-mask-r)
+                    (fm-gbl-fea-0 fm-gbl-fea-0-r)
+                    (fm-gbl-fea-1 fm-gbl-fea-1-r)
+                    )
+          ;; Update mask (will erode before selecting features).
+          (fm-mask (if (> (fm-lcl 0) 0) 1 0))
+          ;; Compute mean, variance.
+          (let ((num (fm-gbl 0))
+                (sum_x (fm-gbl 1))
+                (sum_xx (fm-gbl 2))
+                )
+            (if (<> 0 num)
+              (let* ((mu (/ sum_x num))
+                     (var (+ (/ (- sum_xx (* 2 (* mu sum_x))) num) (* mu mu)))
+                     )
+                (fm-gbl-fea-0 mu)
+                (fm-gbl-fea-1 var)
+                )
+              (fm-gbl-fea-0 0) (fm-gbl-fea-1 0)
+              )
+            )
+          )
+        )
+      ;; Erode and show mask.
+      (erode fm-local-mask fm-mask-erode)
+      (gray-draw-matrix (:fm-global:full-dim 1) (* 1 local-r) fm-mask-erode 0 1 1 1)
+      ;; Compute scalar edge field for features.
+      (idx-f2fill fm-global-edge-kernel -1)(fm-global-edge-kernel 1 1 8)
+      (idx-f2convol fm-global-crop-fea-0 fm-global-edge-kernel fm-global-crop-fea-conv-0)
+      (idx-f2convol fm-global-crop-fea-1 fm-global-edge-kernel fm-global-crop-fea-conv-1)
+      (gray-draw-matrix (:fm-global:full-dim 1) (* 2 local-r) fm-global-crop-fea-conv-0 0 10 1 1)
+      (gray-draw-matrix (:fm-global:full-dim 1) (* 3 local-r) fm-global-crop-fea-conv-1 0 5 1 1)
+;;      (idx-bloop ((fm-lcl-r :fm-local:data)
+;;                  (fm-gbl-r fm-global-crop)
+;;                  (fm-mask-r fm-local-mask)
+;;                  (fm-gbl-fea-r fm-global-features)
+;;                  (fm-gbl-edg-r fm-global-crop-edges)
+;;                  )
+;;        (idx-bloop ((fm-lcl fm-lcl-r)
+;;                    (fm-gbl fm-gbl-r)
+;;                    (fm-mask fm-mask-r)
+;;                    (fm-gbl-fea fm-gbl-fea-r)
+;;                    (fm-gbl-edg fm-gbl-edg-r)
+;;                    )
+;;          )
+;;        )
+      )
     )
-  ;; Set tform to identity for now.
-  (idx-clear rot)
-  (for (i 1 (idx-dim rot 0)) (rot mat i i 1))
-  (idx-clear offset)
+;;  ;; Set tform to identity for now.
+;;  (idx-clear rot)
+;;  (for (i 1 (idx-dim rot 0)) (rot mat i i 1))
+;;  (idx-clear offset)
   )
 
 ;; Take a local feature map and integrate it into a global feature map.
@@ -329,7 +397,7 @@
 
 (de xyz2global-feature-map-test (tb n)
   (==> tb start-sub-camera-depth-points)
-  (==> tb start-sub-robot-pose-ekf)
+;;  (==> tb start-sub-robot-pose-ekf)
 ;;  (==> tb start-sub-odom)
   ;; Create feature, cost, and cost rgb maps.
   (let* ((scale [f 0.05 0.05])
@@ -366,15 +434,17 @@
     ;; Do n loops of processing.
     (for (i 0 (- n 1))
       ;; Grab new data.
-      (while (< (==> tb update-robot-pose-ekf) 0) ())
+;;      (while (< (==> tb update-robot-pose-ekf) 0) ())
 ;;      (while (< (==> tb update-odom) 0) ())
       (while (< (==> tb update-camera-depth-points) 0) ())
       ;; Convert points to feature map.
       (let ((odom-pos (float-matrix-nc 3))
             (odom-orien (float-matrix-nc 4))
            )
-        (idx-copy :tb:robot-pose-ekf-position odom-pos)
-        (idx-copy :tb:robot-pose-ekf-orientation odom-orien)
+        (idx-clear odom-pos)
+        (idx-clear odom-orien)(odom-orien 3 1)
+;;        (idx-copy :tb:robot-pose-ekf-position odom-pos)
+;;        (idx-copy :tb:robot-pose-ekf-orientation odom-orien)
 ;;        (idx-copy :tb:odom-pose-position odom-pos)
 ;;        (idx-copy :tb:odom-pose-orientation odom-orien)
         ;; Flip the angle.
@@ -385,6 +455,10 @@
         )
       (progn (feature-map2cost-map :fm-local:data :cm-local:data)
              (setq :cm-local:pcl-density :fm-local:pcl-density))
+      ;; Register feature maps using visual odometry.
+      (let ()
+        (fm-local-registration fm-local fm-global fm-global-cell () () () ())
+      )
       ;; Update global map (with cost map rgb optimizations).
       (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr get))
       ;; Prepare for display.
