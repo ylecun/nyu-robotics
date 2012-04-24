@@ -85,12 +85,26 @@
   this
   )
 
+;; Height mean and variance features.
+(defconstant "FEATURE_MAP_0_NUM_PTS"      0)
+(defconstant "FEATURE_MAP_1_SUM_HT"       1)
+(defconstant "FEATURE_MAP_2_SUM_HT_SQ"    2)
+;; Height histogram features.
+(defconstant "FEATURE_MAP_3_NUM_HT_BIN_0" 3)
+(defconstant "FEATURE_MAP_4_NUM_HT_BIN_1" 4)
+(defconstant "FEATURE_MAP_5_NUM_HT_BIN_2" 5)
+(defconstant "FEATURE_MAP_6_NUM_HT_BIN_3" 6)
+(defconstant "FEATURE_MAP_7_NUM_HT_BIN_4" 7)
+(defconstant "FEATURE_MAP_IDX_COUNT"      8)
+(defconstant "FEATURE_MAP_HT_BIN_COUNT"   5)
+(defconstant "FEATURE_MAP_HT_BIN_CM"     60)
 #?  (xyz2feature-map <xyz> <transform> <fm>)
 ;; Fill in feature map for each map cell using the point cloud <xyz>
 ;;   Features:
 ;;   [0] - Number of points.
 ;;   [1] - Sum of heights.
 ;;   [2] - Sum of squared heights.
+;;   [3] - Sum of squared heights.
 (de xyz2feature-map (xyz transform fm)
   ((-idx2- (-float-)) xyz)
   ((-idx2- (-float-)) transform)
@@ -99,6 +113,8 @@
         (xyz-tform (float-matrix-nc 3))  ;; Transformed xyz point.
         (tform-rot (narrow (narrow transform 0 3 0) 1 3 0))
         (tform-trans (select (narrow transform 0 3 0) 1 3))
+        (ht-bin-cm (/ @FEATURE_MAP_HT_BIN_CM 100.0))
+        (ht-bin-max-offset (- @FEATURE_MAP_HT_BIN_COUNT 1))
         )
     (idx-clear :fm:data)
     ;; Compute density.
@@ -113,16 +129,19 @@
       (==> fm world2map-cell xyz-tform map-cell)
       ;; Check cell in bounds.
       (if (==> fm in-bounds map-cell)
-        (let ((h (* -1 (xyz-tform 2))))
+        (let* ((h (* -1 (xyz-tform 2)))
+               (ht-bin-offset (min (max (/ h ht-bin-cm) 0) ht-bin-max-offset))
+               (ht-bin-dix (+ @FEATURE_MAP_3_NUM_HT_BIN_0 ht-bin-max-offset))
+               (fm-pt (select (select :fm:data 0 (map-cell 0)) 0 (map-cell 1)))
+               )
           ;; Increment count.
-          (:fm:data (map-cell 0) (map-cell 1) 0
-            (+ (:fm:data (map-cell 0) (map-cell 1) 0) 1))
+          (fm-pt 0 (+ (fm-pt 0) 1))
           ;; Sum height.
-          (:fm:data (map-cell 0) (map-cell 1) 1
-            (+ (:fm:data (map-cell 0) (map-cell 1) 1) h))
+          (fm-pt 1 (+ (fm-pt 1) h))
           ;; Sum square height.
-          (:fm:data (map-cell 0) (map-cell 1) 2
-            (+ (:fm:data (map-cell 0) (map-cell 1) 2) (* h h)))
+          (fm-pt 2 (+ (fm-pt 2) (* h h)))
+          ;; Increment bin for this point.
+          (fm-pt ht-bin-dix (+ (fm-pt ht-bin-dix) 1))
           )
         ()
         )
@@ -222,7 +241,6 @@
   (let ((obs-mat (double-matrix (* 2 (idx-dim pts-global 0)) 4))
         (b-mat   (double-matrix (* 2 (idx-dim pts-global 0))))
         (x       (double-matrix-nc 4))
-        (norm-sq [d@ 0])
         )
     ((-idx1- (-double-)) x)
     ;; Setup obs-mat from points.
@@ -244,10 +262,13 @@
     (solve-sv-inplace obs-mat b-mat x)
 ;;    (pretty x)
     ;; Set return values.
-    (let ((rot-params (narrow x 0 2 0)) (offset-params (narrow x 0 2 2)))
+    (let ((rot-params (narrow x 0 2 0))
+          (offset-params (narrow x 0 2 2))
+          (rot-norm-sq [d@ 0])
+          )
       ;; Normalize rotation part and set offset part.
-      (idx-m1dotm1 rot-params rot-params norm-sq)
-      (idx-d1dotc rot-params (/ 1.0 (sqrt (norm-sq))) rot-params)
+      (idx-m1dotm1 rot-params rot-params rot-norm-sq)
+      (idx-d1dotc rot-params (/ 1.0 (sqrt (rot-norm-sq))) rot-params)
       (rot-mat 0 0 (rot-params 0)) (rot-mat 0 1 (- (rot-params 1)))
       (rot-mat 1 0 (rot-params 1)) (rot-mat 1 1    (rot-params 0))
       (idx-copy offset-params offset)

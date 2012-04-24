@@ -178,14 +178,14 @@
   (setq camera-depth-image-raw (short-matrix 480 640))
   ;; Odometry.
   (setq odom-pose-position (double-matrix 3))
-  (setq odom-pose-orientation (double-matrix 4))
+  (setq odom-pose-orientation [d 0 0 0 1])
   (setq odom-pose-covariance (double-matrix 36))
   (setq odom-twist-linear (double-matrix 3))
   (setq odom-twist-angular (double-matrix 3))
   (setq odom-twist-covariance (double-matrix 36))
   ;; Robot pose EKF.
   (setq robot-pose-ekf-position (double-matrix 3))
-  (setq robot-pose-ekf-orientation (double-matrix 4))
+  (setq robot-pose-ekf-orientation [d 0 0 0 1])
   (setq robot-pose-ekf-covariance (double-matrix 36))
   ;; Depth points (XYZ).
   (setq camera-depth-points (float-matrix (* 480 640) 3))
