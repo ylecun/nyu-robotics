@@ -96,19 +96,19 @@
   ((-idx2- (-float-)) transform)
   ((-obj- (feature-map)) fm)
   (let ((map-cell [i 0 0])               ;; Target cell for xyz point.
-        (xyzw (float-matrix-nc 4))       ;; Source xyz point.
         (xyz-tform (float-matrix-nc 4))  ;; Transformed xyz point.
+        (tform-rot (narrow (narrow transform 0 3 0) 1 3 0))
+        (tform-trans (select (narrow transform 0 3 0) 1 3))
         )
     (idx-clear :fm:data)
-    (xyzw 3 1)
     ;; Compute density.
     (setq :fm:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
     ;;(printf ":fm:pcl-density %f\n" :fm:pcl-density)
     ;; For all point cloud points.
     (idx-bloop ((xyz xyz))
       ;; Transform to robot world.
-      (idx-changedim xyzw 0 3) (idx-copy xyz xyzw) (idx-changedim xyzw 0 4)
-      (idx-m2dotm1 transform xyzw xyz-tform)
+      (idx-m2dotm1 tform-rot xyz xyz-tform)
+      (idx-add xyz-tform tform-trans xyz-tform)
       ;; Find target cell.
       (==> fm world2map-cell xyz-tform map-cell)
       ;; Check cell in bounds.
@@ -222,6 +222,7 @@
   (let ((obs-mat (double-matrix (* 2 (idx-dim pts-global 0)) 4))
         (b-mat   (double-matrix (* 2 (idx-dim pts-global 0))))
         (x       (double-matrix-nc 4))
+        (norm-sq [d@ 0])
         )
     ((-idx1- (-double-)) x)
     ;; Setup obs-mat from points.
@@ -243,9 +244,14 @@
     (solve-sv-inplace obs-mat b-mat x)
 ;;    (pretty x)
     ;; Set return values.
-    (rot-mat 0 0 (x 0)) (rot-mat 0 1 (- (x 1)))
-    (rot-mat 1 0 (x 1)) (rot-mat 1 1    (x 0))
-    (offset 0 (x 2)) (offset 1 (x 3))
+    (let ((rot-params (narrow x 0 2 0)) (offset-params (narrow x 0 2 2)))
+      ;; Normalize rotation part and set offset part.
+      (idx-m1dotm1 rot-params rot-params norm-sq)
+      (idx-d1dotc rot-params (/ 1.0 (sqrt (norm-sq))) rot-params)
+      (rot-mat 0 0 (rot-params 0)) (rot-mat 0 1 (- (rot-params 1)))
+      (rot-mat 1 0 (rot-params 1)) (rot-mat 1 1    (rot-params 0))
+      (idx-copy offset-params offset)
+      )
     )
   ()
   )
