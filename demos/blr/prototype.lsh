@@ -233,7 +233,10 @@
   ;; significant features in the global map projected into the local map.
   ;; Define sigificant features by their feature vector
   ;;   pts mean, pts variance, (TODO) rgb mean, rgb variance
-  (let* (;; Full size data.
+  (let* (;; General variables.
+         (neigh-size (+ (* 2 window-dim) 1))
+         (num-pts 0)
+         ;; Full size data.
          (r (:fm-lcl:full-dim 0))
          (c (:fm-lcl:full-dim 1)) 
          (gbl-crop-ul (idx-sub fm-gbl-cell :fm-lcl:half-dim))
@@ -243,13 +246,6 @@
          (fm-lcl-feat (float-matrix-nc r c num-feat))
          (fm-gbl-masks (ubyte-matrix-nc r c 2))
          (fm-lcl-masks (ubyte-matrix-nc r c 2))
-;;         ;; Stages with 3x3 convolution.
-;;         (r-conv (- r 2)) (c-conv (- c 2))
-;;         (fm-gbl-feat-conv (float-matrix-nc r-conv c-conv num-feat))
-;;         (fm-lcl-feat-conv (float-matrix-nc r-conv c-conv num-feat))
-         ;; General variables.
-         (neigh-size (+ (* 2 window-dim) 1))
-         (num-pts 0)
          )
 
     ;; ******************** FEATURE EXTRACTION ********************
@@ -311,19 +307,9 @@
     ;;(erode (select fm-masks 2 0) (select fm-masks 2 1))
     (idx-copy (select fm-gbl-masks 2 0 )(select fm-gbl-masks 2 1))
     (idx-copy (select fm-lcl-masks 2 0 )(select fm-lcl-masks 2 1))
-;;    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 1 r) (select fm-lcl-masks 2 1) 0 1 1 1)
-;;    ;; Perform convolutions using laplacian kernel.
-;;    (let ((edge-kernel (float-matrix-nc 3 3)))
-;;      (idx-f2fill edge-kernel -1)(edge-kernel 1 1 8)
-;;      (idx-peloop ((fm-gbl-feat fm-gbl-feat) (fm-gbl-feat-conv fm-gbl-feat-conv)
-;;                   (fm-lcl-feat fm-lcl-feat) (fm-lcl-feat-conv fm-lcl-feat-conv)
-;;                   )
-;;        (idx-f2convol fm-gbl-feat edge-kernel fm-gbl-feat-conv)
-;;        (idx-f2convol fm-lcl-feat edge-kernel fm-lcl-feat-conv)
-;;        )
-;;      )
-;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 0 r) (select fm-gbl-feat 2 0) 0 3.0 1 1)
-;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 1 r) (select fm-gbl-feat 2 1) 0 0.1 1 1)
+    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 1 r) (select fm-lcl-masks 2 1) 0 1 1 1)
+    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 0 r) (select fm-gbl-feat 2 0) 0 3.0 1 1)
+    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 1 r) (select fm-gbl-feat 2 1) 0 0.5 1 1)
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
@@ -425,13 +411,15 @@
                 )
               (if (and (> (num-lcl-pts) 0) (and (<> 0 (fm-gbl-masks-match 1)) (< p 0.0001)))
                 (let ((match-offset (int-matrix-nc 2))
-                      (min-dist-sq [d@ 0])
+                      (min-dist-sq-0 [d@ 0])
+                      (min-dist-sq-1 [d@ 0])
                       (diff-tmp (float-matrix-nc (idx-dim fm-gbl-feat 2)))
                       (dist-sq [f@ 0])
                       (cell (int-matrix-nc 2))
                       (world-cell-tmp (float-matrix-nc 2))
                       )
-                  (min-dist-sq (double-inf))
+                  (min-dist-sq-0 (double-inf))
+                  (min-dist-sq-1 (double-inf))
                   (img-dispar-match 1 255)
                   (printf "interest-pt (%d, %d), p = %f, fm-gbl-feat-pt =\n" i j p)
                   (pretty fm-gbl-feat-pt)
@@ -453,26 +441,31 @@
                           ;; See if closest match.
                           (idx-sub fm-gbl-feat-pt fm-lcl-feat-pt diff-tmp)
                           (idx-m1dotm1 diff-tmp diff-tmp dist-sq)
-                          (if (>= (dist-sq) (min-dist-sq))
-                            () ;; No update when not the new min.
-                            (idx-copy dist-sq min-dist-sq)
+                          (if (>= (dist-sq) (min-dist-sq-0))
+                            (if (< (dist-sq) (min-dist-sq-1)) (min-dist-sq-1 (dist-sq)))
+                            (min-dist-sq-0 (dist-sq))
                             (match-offset 0 i) (match-offset 1 j)
                             )
                           )
                         )
                       )
                     )
-                  (pretty (select (select fm-lcl-feat 0 (+ i (match-offset 0)))
-                                                      0 (+ j (match-offset 1))))
-                  (printf "closest (%d,%d) = %f\n" (match-offset 0) (match-offset 1) (min-dist-sq))
-                  (cell 0 i) (cell 1 j)
-                  (==> fm-lcl map-cell2world cell world-cell-tmp)
-                  (idx-copy world-cell-tmp (select px-correspond-gbl 0 num-matched))
-                  (idx-add cell match-offset cell)
-                  (img-dispar (cell 0) (cell 1) 0 255)
-                  (==> fm-lcl map-cell2world cell world-cell-tmp)
-                  (idx-copy world-cell-tmp (select px-correspond-lcl 0 num-matched))
-                  (incr num-matched)
+                  ;; We have a match when the second closest far enough from the first.
+                  (if (< (/ (min-dist-sq-1) (min-dist-sq-0)) 1.2)
+                    ;; No match when second closest is also very close.
+                    (printf "no match : closest = %f, 2nd = %f\n" (min-dist-sq-0) (min-dist-sq-1))
+                    (pretty (select (select fm-lcl-feat 0 (+ i (match-offset 0)))
+                                                        0 (+ j (match-offset 1))))
+                    (printf "closest (%d,%d) = %f\n" (match-offset 0) (match-offset 1) (min-dist-sq-0))
+                    (cell 0 i) (cell 1 j)
+                    (==> fm-lcl map-cell2world cell world-cell-tmp)
+                    (idx-copy world-cell-tmp (select px-correspond-gbl 0 num-matched))
+                    (idx-add cell match-offset cell)
+                    (img-dispar (cell 0) (cell 1) 0 255)
+                    (==> fm-lcl map-cell2world cell world-cell-tmp)
+                    (idx-copy world-cell-tmp (select px-correspond-lcl 0 num-matched))
+                    (incr num-matched)
+                    )
                   )
                 )
               )
@@ -481,7 +474,7 @@
           (incr i)
           )
         )
-;;        (rgb-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) img-dispar-match 1 1)
+        (rgb-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) img-dispar-match 1 1)
         ;; Perform registration between maps when there are enough point correspondences.
         (if (>= num-matched 6)
           (let ((rot-d (double-matrix-nc 2 2))
@@ -494,126 +487,11 @@
             (idx-copy offset-d (narrow offset 0 2 0)) (offset 0 0)
             )
           )
-;;      ;; Loop over all pixels looking for interesting ones.
-;;      (idx-bloop ((gbl-search-neigh-r gbl-search-neigh)
-;;                  (gbl-search-mask-neigh-r gbl-search-mask-neigh)
-;;                  (fm-gbl-r (narrow (narrow (narrow fm-gbl-crop 0 r-feat window-dim)
-;;                                    1 c-feat window-dim) 2 2 1))
-;;                  (fm-lcl-neigh-r fm-lcl-neigh)
-;;                  (fm-lcl-mask-neigh-r fm-lcl-mask-neigh)
-;;                  )
-;;        (setq j window-dim)
-;;        (idx-bloop ((gbl-search-neigh gbl-search-neigh-r)
-;;                    (gbl-search-mask-neigh gbl-search-mask-neigh-r)
-;;                    (fm-gbl-pt fm-gbl-r)
-;;                    (fm-lcl-neigh fm-lcl-neigh-r)
-;;                    (fm-lcl-mask-neigh fm-lcl-mask-neigh-r)
-;;                    )
-;;          (let* ((discard (<> 9 ((idx-sum gbl-search-mask-neigh))))
-;;                 (gbl-search-pt (select (select gbl-search-neigh 1 1) 1 1))
-;;                 (gbl-search-pt-norm-sq (idx-m1dotm1 gbl-search-pt gbl-search-pt))
-;;                 )
-;;            (if (not discard)
-;;              (if (< (gbl-search-pt-norm-sq) 0.1)
-;;                (setq discard t)
-;;                ;; Look at uniqueness in the region.
-;;                (let ((p 1))
-;;                  (idx-bloop ((mu mu)(var var)(x gbl-search-pt))
-;;                    (if (<> 0 (var))
-;;                      (setq p (* p (exp (- (/ (** (abs (- (x) (mu))) 2) (* 2 (var)))))))
-;;                      )
-;;                    )
-;;;;                    (printf "p = %f\n" p)
-;;                  (setq discard (> p 0.01))
-;;                  )
-;;                )
-;;              )
-;;            (if discard
-;;              () ;; Do nothing when discarded.
-;;              (disparity-map i j 1 255)
-;;              ;; Find this point in the local map window.
-;;;;                (printf "found pt match (%d, %d)\n" i j)
-;;;;                (pretty fm-gbl-pt)
-;;;;                (pretty (select (select fm-gbl-crop 0 i) 0 j))
-;;;;                (pretty (select (select :fm-lcl:data 0 i) 0 j))
-;;;;                (pretty fm-lcl-neigh)
-;;              (let ((diff-tmp (float-matrix-nc 2))
-;;                    (dist-sq [f@ 0])
-;;                    (min-dist-sq (idx-m1dotm1 fm-gbl-pt fm-gbl-pt))
-;;                    (min-cell [i 0 0])
-;;                    (world-cell-tmp (float-matrix-nc 2))
-;;                    (cell (int-matrix-nc 2))
-;;;;                    ;; DEBUG sq diff.
-;;;;                    (dbg-sq-diff (float-matrix-nc neigh-size neigh-size))
-;;;;                    ;; DEBUG sq diff.
-;;                    )
-;;;;                ;; DEBUG sq diff.
-;;;;                (idx-f2fill dbg-sq-diff -1)
-;;;;                ;; DEBUG sq diff.
-;;                ;; Subtract fm-gbl-pt from the neighborhood and take norm square.
-;;                (for (i (- window-dim) window-dim)
-;;                  (for (j (- window-dim) window-dim)
-;;                    (let* ((i-pt (+ i window-dim))
-;;                           (j-pt (+ j window-dim))
-;;                           (fm-lcl-pt (select (select fm-lcl-neigh 1 i-pt) 1 j-pt))
-;;                           (mask-pt (select (select fm-lcl-mask-neigh 0 i-pt) 0 j-pt))
-;;                           )
-;;                      ;; Make sure masked.
-;;                      (if (= 0 (mask-pt))
-;;                        () ;; Don't match if not masked.
-;;                        ;; See if closest match.
-;;                        (idx-sub fm-gbl-pt fm-lcl-pt diff-tmp)
-;;                        (idx-m1dotm1 diff-tmp diff-tmp dist-sq)
-;;;;                        ;; DEBUG sq diff.
-;;;;                        (dbg-sq-diff i-pt j-pt (dist-sq))
-;;;;                        ;; DEBUG sq diff.
-;;                        (if (>= (dist-sq) (min-dist-sq))
-;;                          () ;; No update when not the new min.
-;;                          (idx-copy dist-sq min-dist-sq)
-;;                          (min-cell 0 i) (min-cell 1 j)
-;;                          )
-;;                        )
-;;                      )
-;;                    )
-;;                  )
-;;;;                (printf "closest (%d,%d) = %f\n" (min-cell 0) (min-cell 1) (min-dist-sq))
-;;;;                ;; DEBUG sq diff.
-;;;;                (pretty dbg-sq-diff)
-;;;;                ;; DEBUG sq diff.
-;;
-;;                (cell 0 i) (cell 1 j)
-;;;;                  (pretty cell)
-;;                (==> fm-lcl map-cell2world cell world-cell-tmp)
-;;                (idx-copy world-cell-tmp (select px-correspond-gbl 0 num-pts))
-;;                (idx-add cell min-cell cell)
-;;;;                  (pretty cell)
-;;                (disparity-map (cell 0) (cell 1) 0 255)
-;;                (==> fm-lcl map-cell2world cell world-cell-tmp)
-;;                (idx-copy world-cell-tmp (select px-correspond-lcl 0 num-pts))
-;;                (incr num-pts)
-;;                )
-;;              )
-;;            )
-;;          (incr j)
-;;          )
-;;        (incr i)
-;;        )
-;;      (rgb-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) disparity-map 1 1)
-;;
-;;      ;; Perform registration between maps when there are enough point correspondences.
-;;      (if (> num-pts 10)
-;;        (let ((rot-d (double-matrix-nc 2 2))
-;;              (offset-d (double-matrix-nc 2))
-;;              )
-;;          (printf "There were %d point correspondences\n" num-pts) 
-;;          (map-registration (narrow px-correspond-gbl 0 num-pts 0)
-;;                            (narrow px-correspond-lcl 0 num-pts 0) rot-d offset-d)
-;;          (idx-copy rot-d rot)
-;;          (idx-copy offset-d (narrow offset 0 2 0)) (offset 0 0)
-;;          )
-;;        )
       num-matched
       )
+    ;; ******************** INTEREST POINT DETECTION & MATCHING ********************
+    ;; ******************** INTEREST POINT DETECTION & MATCHING ********************
+    ;; ******************** INTEREST POINT DETECTION & MATCHING ********************
     )
   )
 
