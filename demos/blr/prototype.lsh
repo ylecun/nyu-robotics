@@ -14,6 +14,13 @@
   (cpheader "#include <limits>")
   ())
 
+(de double-inf ()
+  (to-double #{ std::numeric_limits<double>::infinity() #})
+  )
+(de float-inf ()
+  (to-float #{ std::numeric_limits<float>::infinity() #})
+  )
+
 #? (quaternion2matrix <q> <m>)
 ;; Convert a quaternion to a 3x3 rotation matrix.
 (de quaternion2matrix (q m)
@@ -94,7 +101,7 @@
             (idx-clear fm)
             ;; reissb -- 20120201 -- Can't get inifinity to compile.
             ;;(fm @FEATURE_MAP_IDX_COUNT 9999999999.1)
-            (fm @FEATURE_MAP_IDX_COUNT (to-float #{ std::numeric_limits<float>::infinity() #}))
+            (fm @FEATURE_MAP_IDX_COUNT (float-inf))
             (cm 0 @COST_MAP_INF_COST)
             (idx-copy blue cm-rgb)
             )
@@ -216,6 +223,12 @@
 
 ;; Resample a local feature map by solving a least squares optimization.
 (de fm-local-registration (fm-lcl fm-gbl fm-gbl-cell rot offset window-dim)
+  ((-obj- (feature-map)) fm-lcl)
+  ((-obj- (feature-map)) fm-gbl)
+  ((-idx1- (-int-)) fm-gbl-cell)
+  ((-idx2- (-float-)) rot)
+  ((-idx1- (-float-)) offset)
+  ((-int-) window-dim)
   ;; Find correspondences by looking in a square neighborhood about the image of
   ;; significant features in the global map projected into the local map.
   ;; Define sigificant features by their feature vector
@@ -298,7 +311,7 @@
     ;;(erode (select fm-masks 2 0) (select fm-masks 2 1))
     (idx-copy (select fm-gbl-masks 2 0 )(select fm-gbl-masks 2 1))
     (idx-copy (select fm-lcl-masks 2 0 )(select fm-lcl-masks 2 1))
-    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 1 r) (select fm-lcl-masks 2 1) 0 1 1 1)
+;;    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 1 r) (select fm-lcl-masks 2 1) 0 1 1 1)
 ;;    ;; Perform convolutions using laplacian kernel.
 ;;    (let ((edge-kernel (float-matrix-nc 3 3)))
 ;;      (idx-f2fill edge-kernel -1)(edge-kernel 1 1 8)
@@ -309,8 +322,8 @@
 ;;        (idx-f2convol fm-lcl-feat edge-kernel fm-lcl-feat-conv)
 ;;        )
 ;;      )
-    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 0 r) (select fm-gbl-feat 2 0) 0 3.0 1 1)
-    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 1 r) (select fm-gbl-feat 2 1) 0 0.1 1 1)
+;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 0 r) (select fm-gbl-feat 2 0) 0 3.0 1 1)
+;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 1 r) (select fm-gbl-feat 2 1) 0 0.1 1 1)
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
@@ -345,6 +358,10 @@
            (j window-dim)
            (num-matched 0)
            )
+      ((-int-) masked-pts)
+      ((-int-) i)
+      ((-int-) j)
+      ((-int-) num-matched)
       ;; Compute mean, variance for all feature vectors in global map.
       (idx-bloop ((fm-gbl-feat fm-gbl-feat)
                   (fm-gbl-masks (select fm-gbl-masks 2 1))
@@ -389,8 +406,15 @@
                       (fm-gbl-masks-match fm-gbl-masks-match)
                       (fm-gbl-masks-neigh fm-gbl-masks-neigh)
                       )
-            ;; See if this point is interesting.
-            (let ((p 1.0) (norm 1.0) (sqrt-2-pi (sqrt (* 2 3.14159265))))
+            ;; See if this point is interesting and could match.
+            (let ((p 1.0)
+                  (norm 1.0)
+                  (sqrt-2-pi (sqrt (* 2 3.14159265)))
+                  (num-lcl-pts (idx-sum (select fm-lcl-masks-neigh 2 1)))
+                  )
+              ((-double-) p)
+              ((-double-) norm)
+              ((-double-) sqrt-2-pi)
               (idx-bloop ((mu mu)(var var)(x fm-gbl-feat-pt))
                 (if (<> 0 (var))
                   (progn
@@ -399,15 +423,57 @@
                     )
                   )
                 )
-              (if (and (<> 0 (fm-gbl-masks-match 1)) (< p 0.1))
-               (progn
-                 (incr num-matched)
-                 (img-dispar-match 1 255)
-                 (printf "interest-pt (%d, %d), p = %f, fm-gbl-feat-pt =\n" i j p)
-                 (pretty fm-gbl-feat-pt)
-                 (pretty fm-gbl-pt)
-                 ;; Find this point in the local map.
-                 )
+              (if (and (> (num-lcl-pts) 0) (and (<> 0 (fm-gbl-masks-match 1)) (< p 0.0001)))
+                (let ((match-offset (int-matrix-nc 2))
+                      (min-dist-sq [d@ 0])
+                      (diff-tmp (float-matrix-nc (idx-dim fm-gbl-feat 2)))
+                      (dist-sq [f@ 0])
+                      (cell (int-matrix-nc 2))
+                      (world-cell-tmp (float-matrix-nc 2))
+                      )
+                  (min-dist-sq (double-inf))
+                  (img-dispar-match 1 255)
+                  (printf "interest-pt (%d, %d), p = %f, fm-gbl-feat-pt =\n" i j p)
+                  (pretty fm-gbl-feat-pt)
+                  (pretty fm-gbl-pt)
+                  ;; Find this point in the local map.  Subtract global point from the
+                  ;; local neighborhood and take norm square.
+                  (for (i (- window-dim) window-dim)
+                    (for (j (- window-dim) window-dim)
+                      ((-int-) i)
+                      ((-int-) j)
+                      (let* ((i-pt (+ i window-dim))
+                             (j-pt (+ j window-dim))
+                             (fm-lcl-feat-pt (select (select fm-lcl-feat-neigh 1 i-pt) 1 j-pt))
+                             (fm-lcl-mask-pt (select (select fm-lcl-masks-neigh 1 i-pt) 1 j-pt))
+                             )
+                        ;; Make sure masked.
+                        (if (= 0 (fm-lcl-mask-pt 1))
+                          () ;; Don't match if not masked.
+                          ;; See if closest match.
+                          (idx-sub fm-gbl-feat-pt fm-lcl-feat-pt diff-tmp)
+                          (idx-m1dotm1 diff-tmp diff-tmp dist-sq)
+                          (if (>= (dist-sq) (min-dist-sq))
+                            () ;; No update when not the new min.
+                            (idx-copy dist-sq min-dist-sq)
+                            (match-offset 0 i) (match-offset 1 j)
+                            )
+                          )
+                        )
+                      )
+                    )
+                  (pretty (select (select fm-lcl-feat 0 (+ i (match-offset 0)))
+                                                      0 (+ j (match-offset 1))))
+                  (printf "closest (%d,%d) = %f\n" (match-offset 0) (match-offset 1) (min-dist-sq))
+                  (cell 0 i) (cell 1 j)
+                  (==> fm-lcl map-cell2world cell world-cell-tmp)
+                  (idx-copy world-cell-tmp (select px-correspond-gbl 0 num-matched))
+                  (idx-add cell match-offset cell)
+                  (img-dispar (cell 0) (cell 1) 0 255)
+                  (==> fm-lcl map-cell2world cell world-cell-tmp)
+                  (idx-copy world-cell-tmp (select px-correspond-lcl 0 num-matched))
+                  (incr num-matched)
+                  )
                 )
               )
             (incr j)
@@ -415,7 +481,19 @@
           (incr i)
           )
         )
-        (rgb-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) img-dispar-match 1 1)
+;;        (rgb-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) img-dispar-match 1 1)
+        ;; Perform registration between maps when there are enough point correspondences.
+        (if (>= num-matched 6)
+          (let ((rot-d (double-matrix-nc 2 2))
+                (offset-d (double-matrix-nc 2))
+                )
+            (printf "There were %d point correspondences\n" num-matched) 
+            (map-registration (narrow px-correspond-gbl 0 num-matched 0)
+                              (narrow px-correspond-lcl 0 num-matched 0) rot-d offset-d)
+            (idx-copy rot-d rot)
+            (idx-copy offset-d (narrow offset 0 2 0)) (offset 0 0)
+            )
+          )
 ;;      ;; Loop over all pixels looking for interesting ones.
 ;;      (idx-bloop ((gbl-search-neigh-r gbl-search-neigh)
 ;;                  (gbl-search-mask-neigh-r gbl-search-mask-neigh)
@@ -534,8 +612,8 @@
 ;;          (idx-copy offset-d (narrow offset 0 2 0)) (offset 0 0)
 ;;          )
 ;;        )
+      num-matched
       )
-    num-pts
     )
   )
 
@@ -609,7 +687,7 @@
 ;;  (==> tb start-sub-robot-pose-ekf)
 ;;  (==> tb start-sub-odom)
   ;; Create feature, cost, and cost rgb maps.
-  (let* ((scale [f 0.05 0.05])
+  (let* ((scale [f 0.06 0.06])
          (fm-global (new feature-map [i 200 200] scale (+ @FEATURE_MAP_IDX_COUNT 1)))
          (cm-global ())
          (cm-global-rgb ())
@@ -718,11 +796,14 @@
 ;;(let ((dhc-make-lushflags (concat dhc-make-lushflags " -fopenmp")))
   (dhc-make-with-c++ () () ;;"/usr/lib/gcc/i486-linux-gnu/4.4/libgomp.so"
     prototype-cpp-dummy
+    double-inf
+    float-inf
     quaternion2matrix
     xyz2global-feature-map
     fm-global-decay
     fm-global-update
     erode
+;;    fm-local-registration
     )
 ;;  )
 
