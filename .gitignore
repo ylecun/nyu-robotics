@@ -14,3 +14,4 @@ lush/lsh/**/C/
 *.swp
 lush/Makefile
 demos/C/
+demos/blr/C/

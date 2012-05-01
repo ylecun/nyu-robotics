@@ -209,7 +209,7 @@
 ;; <A x = b> in the least-square sense using the singular 
 ;; value decomposition. 
 (dmd solve-sv (a b)
-  `(let ((aa (idx-copy ,a)) (x (double-matrix (idx-dim ,b 0))))
+  `(let ((aa (idx-copy ,a)) (x (double-matrix (idx-dim ,a 1))))
      (when (<> 0 (solve-sv-inplace aa ,b x))
        (error "gsl error"))
      x))
@@ -541,7 +541,7 @@
       (error "must have M>=N for SVD of MxN matrix"))
     (when (<> n0 (idx-dim b 0))
       (error "A and b have incompatible sizes"))
-    (let* ((v (double-matrix-nc n0 n1))
+    (let* ((v (double-matrix-nc n1 n1))
 	   (s (double-matrix-nc n1))
 	   (w (double-matrix-nc n1))
 	   (ret 0))

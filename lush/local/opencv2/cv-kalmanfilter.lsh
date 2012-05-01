@@ -1,0 +1,132 @@
+;;;
+;;;
+;;;
+;;;   Opencv implemented kalman filter.
+;;;
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(libload "cv-config2")
+
+
+;;
+;;
+(defclass kalmanfilter object
+  ((-gptr- "CvKalman*") kalman)
+  ((-idx2- (-float-)) measurement)
+  ((-idx2- (-float-)) prediction)
+  ((-idx2- (-float-)) transition_matrix)
+)
+
+
+;;
+;;
+(defmethod kalmanfilter kalmanfilter (dp mp)
+  ((-int-) dp mp) 
+  (setq measurement (float-matrix mp 1))
+  (setq prediction (float-matrix dp 1))
+  #{
+  $kalman = cvCreateKalman($dp,$mp,0);
+  cvSetIdentity($kalman->measurement_matrix, cvRealScalar(1) );
+  cvSetIdentity($kalman->process_noise_cov, cvRealScalar(1e-5) );
+  cvSetIdentity($kalman->measurement_noise_cov, cvRealScalar(1e-1) );
+  cvSetIdentity($kalman->error_cov_post, cvRealScalar(1));
+  #}
+  ()
+)
+
+
+
+;;
+;;
+(defmethod kalmanfilter set-transition-matrix (H)
+  ((-idx2- (-float-)) H)
+  (let ((m (idx-dim H 0))
+	(n (idx-dim H 1)))
+    (setq transition_matrix (float-matrix m n))
+    (idx-bloop ((transition_matrix transition_matrix)(H H))
+      (idx-bloop ((transition_matrix transition_matrix)(H H))
+	(transition_matrix (H))))
+    #{
+    float tm[(int)($m)][(int)($n)];
+    #}
+    (cidx-bloop ("i" "j" ("transition_matrix" transition_matrix))		
+		#{
+		tm[i][j]=*transition_matrix;
+		#})
+    #{
+    memcpy($kalman->transition_matrix->data.fl, tm, sizeof(tm));
+    #}
+  ())
+)
+
+
+
+;;
+;;
+(defmethod kalmanfilter update-measurement (Z)
+  ((-idx2- (-float-)) Z)
+  (idx-bloop ((measurement measurement)(Z Z))
+    (idx-bloop ((measurement measurement)(Z Z))
+      (measurement (Z))
+      ()))
+  (let ((n (idx-dim measurement 0)))
+    #{
+    CvMat* mm = cvCreateMat( $n, 1, CV_32FC1 );
+    #}
+    (cidx-bloop ("i" ("measurement" measurement))
+		#{
+		mm->data.fl[i]=*measurement;
+		#})
+    #{
+    cvKalmanCorrect($kalman, mm);
+    #}
+    ())		
+)
+
+
+;;
+;;
+(defmethod kalmanfilter get-predict ()
+  (cidx-bloop ("i" ("prediction" prediction))
+	      #{
+	      const CvMat* predict = cvKalmanPredict($kalman, 0);
+	      *prediction=predict->data.fl[i];
+	      #}
+	      prediction)
+)
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make-with-c++
+   () 
+   cv-libs
+   #{
+   #include <vector>
+   #include <opencv/cv.h>
+
+   using namespace cv;
+   #}
+   (kalmanfilter kalmanfilter 
+		 set-transition-matrix update-measurement  get-predict)
+)
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de kalman-test ()
+  (let* ((kf (new kalmanfilter 2 1))
+	 (H (float-matrix 2 1))
+	 (Z (float-matrix 1 1))
+	 (X ()))
+    (Z 0 0 1)
+    (progn (H 0 0 1) (H 1 0 1))
+    (==> kf set-transition-matrix H)
+    (while 1
+      (==> kf update-measurement Z)
+      (setq X (==> kf get-predict))
+      (print Z)
+      (pretty X)
+      (Z 0 0 (1+ (Z 0 0)))
+      ()))
+)

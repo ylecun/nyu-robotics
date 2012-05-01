@@ -1,0 +1,49 @@
+;;;
+;;;
+;;;
+;;;    Extra pcloud manipulate functions
+;;;
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(libload "libidx/idx-float")
+(libload "pcloud/pcloud")
+
+#?(pcloud-rgbrcdxyz2rgbxyz <rgb> <rcd> <xyz> <rgbxyz>)
+;;<rgbxyz> defined as <height>X<width>X<7> 
+;;data saved as (valid-bit r g b x y z)
+(de pcloud-rgbrcdxyz2rgbxyz (rgb rcd xyz rgbxyz)
+  ((-idx2- (-float-)) rgb rcd xyz)
+  ((-idx3- (-float-)) rgbxyz)
+  (idx-bloop ((rgb rgb)(rcd rcd)(xyz xyz))
+    ;;1 for vaild data
+    (rgbxyz (rcd 0) (rcd 1) 0 1)
+    ;;r
+    (rgbxyz (rcd 0) (rcd 1) 1 (rgb 0))
+    ;;g
+    (rgbxyz (rcd 0) (rcd 1) 2 (rgb 1))
+    ;;b
+    (rgbxyz (rcd 0) (rcd 1) 3 (rgb 2))
+    ;;x
+    (rgbxyz (rcd 0) (rcd 1) 4 (xyz 0))
+    ;;y
+    (rgbxyz (rcd 0) (rcd 1) 5 (xyz 1))
+    ;;z
+    (rgbxyz (rcd 0) (rcd 1) 6 (xyz 2)))
+)
+
+
+
+
+
+
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make 
+ ()
+ pcloud-rgbrcdxyz2rgbxyz
+)

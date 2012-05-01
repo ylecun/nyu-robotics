@@ -1,0 +1,583 @@
+;; Prototype file for demos/blr.
+(libload "feature-map")
+(libload "turtlebot/turtlebot")
+(libload "libc/constants")
+(libload "libc/stopwatch")
+(libload "../../lush/lsh/libimage/morpho")
+(libload "idx-float")
+(libload "idx-convol")
+
+#? (prototype-cpp-dummy)
+;; Load cpp includes.
+(de prototype-cpp-dummy ()
+  (cpheader "#include \"turtlebot/turtlebot.h\"")
+  ())
+
+#? (quaternion2matrix <q> <m>)
+;; Convert a quaternion to a rotation matrix.
+(de quaternion2matrix (q m)
+  ((-idx1- (-float-)) q)
+  ((-idx2- (-float-)) m)
+  (let ((qq (idx-mul q q)))
+    (m 0 0 (- (- (+ (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 1 1 (- (+ (- (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 2 2 (+ (- (- (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 0 1 (* 2 (- (* (q 0) (q 1)) (* (q 3) (q 2)))))
+    (m 0 2 (* 2 (+ (* (q 3) (q 1)) (* (q 0) (q 2)))))
+    (m 1 0 (* 2 (+ (* (q 0) (q 1)) (* (q 3) (q 2)))))
+    (m 1 2 (* 2 (- (* (q 1) (q 2)) (* (q 3) (q 0)))))
+    (m 2 0 (* 2 (- (* (q 0) (q 2)) (* (q 3) (q 1)))))
+    (m 2 1 (* 2 (+ (* (q 3) (q 0)) (* (q 1) (q 2)))))
+    )
+  m
+  )
+
+#? (xyz2global-feature-map <xyz> <odom-pos> <odom-orien> <transform> <fm-global> <fm-local>)
+;; Fill in feature map for each map cell using the point cloud <xyz> where
+;; the feature-map is situated within the global map.
+;;   Features:
+;;   [0] - Number of points.
+;;   [1] - Sum of heights.
+;;   [2] - Sum of squared heights.
+;;   [3] - Last-seen time.
+;;
+;; Returns the center pixel coordinate in global-map space of the feature-map.
+(de xyz2global-feature-map (xyz odom-pos odom-orien transform fm-global fm-local)
+  ((-idx2- (-float-)) xyz)
+  ((-idx1- (-float-)) odom-pos)
+  ((-idx1- (-float-)) odom-orien)
+  ((-idx2- (-float-)) transform)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (feature-map)) fm-local)
+  ;; Place the feature map center pixel on the pixel closest to the
+  ;; robot center in the global map. Compute the offset from the pixel
+  ;; center to the robot center and compute the feature map using that
+  ;; offset when transforming the point cloud.
+  (let* ((global-cell [i 0 0])                    ;; Robot position in global map.
+         (global-cell-world (float-matrix-nc 2))  ;; Global cell in world coordinates.
+         (global-cell-offset (float-matrix-nc 2)) ;; Offset from cell pixel center to robot.
+         (global-mat-cell (float-matrix 4 4))     ;; Matrix relative to global-cell-world.
+         (transform-full (float-matrix-nc 4 4))   ;; Matrix used to transform point cloud.
+         (map-cell [i 0 0])                       ;; Target cell for xyz point.
+         (xyzw [f 0 0 0 1])                       ;; Source xyz point.
+         (xyzw-v3 (narrow xyzw 0 3 0))            ;; 3d view of xyzw for copying.
+         (xyz-tform (float-matrix-nc 4))          ;; Transformed xyz point.
+         (odom-pos-v2 (narrow odom-pos 0 2 0))    ;; 2d view of odom-pos (z=0 plane).
+         )
+    
+    ;; Compute map cell for robot position in global map.
+    (==> fm-global world2map-cell odom-pos global-cell)
+    ;; Get pixel center for global-cell in world coordinates.
+    (==> fm-global map-cell2world global-cell global-cell-world)
+    (idx-sub odom-pos-v2 global-cell-world global-cell-offset)
+    ;; Setup global rotation matrix using odom-orien.
+    (global-mat-cell 3 3 1)
+    (quaternion2matrix odom-orien global-mat-cell)
+    (global-mat-cell 0 3 (+ (* (global-cell-offset 0) (global-mat-cell 0 0))
+                            (* (global-cell-offset 1) (global-mat-cell 0 1))))
+    (global-mat-cell 1 3 (+ (* (global-cell-offset 0) (global-mat-cell 1 0))
+                            (* (global-cell-offset 1) (global-mat-cell 1 1))))
+    ;; Transformation order: global-mat-cell * transform * xyz
+    (idx-m2timesm2 global-mat-cell transform transform-full)
+    (idx-clear :fm-local:data)
+    ;; Compute density.
+    (setq :fm-local:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
+    ;; For all point cloud points.
+    (idx-bloop ((xyz xyz))
+      ;; Transform to robot world.
+      (idx-copy xyz xyzw-v3)
+      (idx-m2dotm1 transform-full xyzw xyz-tform)
+      ;; Find target cell.
+      (==> fm-local world2map-cell xyz-tform map-cell)
+      ;; Check cell in bounds.
+      (if (==> fm-local in-bounds map-cell)
+        (let ((h (* -1 (xyz-tform 2))))
+          ;; Increment count.
+          (:fm-local:data (map-cell 0) (map-cell 1) 0
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 0) 1))
+          ;; Sum height.
+          (:fm-local:data (map-cell 0) (map-cell 1) 1
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 1) h))
+          ;; Sum square height.
+          (:fm-local:data (map-cell 0) (map-cell 1) 2
+            (+ (:fm-local:data (map-cell 0) (map-cell 1) 2) (* h h)))
+          )
+        ()
+        )
+      )
+    global-cell
+    )
+  )
+
+;; Time to live for a feature observation.
+(defconstant "COST_MAP_GLOBAL_TTL_SECONDS" 120)
+
+#? (de fm-global-decay <fm-global> <cm-global> <cm-global-rgb> <ttl-seconds> <time-now>)
+;; Decay a global feature map and cost map with rgb optimiations.
+(de fm-global-decay (fm-global cm-global cm-global-rgb ttl-seconds time-now)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (cost-map)) cm-global)
+  ((-idx3- (-int-)) cm-global-rgb)
+  ((-float-) ttl-seconds)
+  ((-float-) time-now)
+  (let* ((time-cutoff (- time-now ttl-seconds)))
+    (idx-pbloop ((fm-r :fm-global:data)(cm-r :cm-global:data)(cm-rgb-r cm-global-rgb))
+      (idx-bloop ((fm fm-r)(cm cm-r)(cm-rgb cm-rgb-r))
+        ;; Reset point when last-seen time is too old.
+        (if (< (fm 3) time-cutoff)
+          (progn (idx-clear fm)
+                 ;; reissb -- 20120201 -- Can't get inifinity to compile.
+                 (fm 3 9999999999.1)
+                 (cm 0 @COST_MAP_INF_COST)
+                 (idx-copy [i 0 0 255] cm-rgb)
+                 )
+          )
+        )
+      )
+    )
+  )
+
+;; Exponential moving average weight used to blend new observations into the
+;; global feature map.
+(defconstant "COST_MAP_GLOBAL_EXP_MOV_AVG_WT" 0.9)
+
+;; Erode a byte matrix.
+;;
+;; This is an optimized erosion that does not interpolate borders. It is also
+;; hard-coded to use the 1-pixel cross filter.
+;;
+;; Benchmarks on AMD E-350 APU machine:
+;; ? (setq img (ubyte-matrix 40 40))
+;; ? (setq img-erode (ubyte-matrix 40 40))
+;; ? (cputime (repeat 400000 (erode img img-erode)))
+;; = 8.11
+;; ? (cputime (repeat 400000 (erode img img-erode)))
+;; = 8.09
+;; ? (cputime (repeat 400000 (ubim-erosion img 1)))
+;; = 13.29
+;; ? (cputime (repeat 400000 (ubim-erosion img 1)))
+;; = 13.23
+;; ?
+(de erode (src dst)
+  ((-idx2- (-ubyte-)) src)
+  ((-idx2- (-ubyte-)) dst)
+  ;; Check sizes.
+  (let ((r (idx-dim src 0)) (c (idx-dim src 1)))
+    ((-int-) r) ((-int-) c)
+    (when (or (< r 3) (< c 3))
+      (error "insufficient source image size"))
+    (when (or (<> r (idx-dim dst 0)) (<> c (idx-dim dst 1)))
+      (error "insufficient destination image size"))
+    ;; Erode using column sums. Need solid 9x9.
+    (cpheader "#include <algorithm>")
+    (cpheader "#include <stdint.h>")
+    #{
+      {
+        uint8_t* const dst_begin = IDX_PTR($dst, uint8_t);
+        // Step through rows and columns. Need all sum of 9 to have a pixel.
+        const int rows = ($src)->dim[0];
+        const int cols = ($src)->dim[1];
+        const int row_steps = rows - 2;
+        const int col_steps = cols - 2;
+        const int row_mod = ($src)->mod[0];
+        const int col_mod = ($src)->mod[1];
+        const int plus_2_col = 2 * col_mod;
+        for (int r = 0; r < row_steps; ++r)
+        {
+          const uint8_t* src_r0 = (r * row_mod) + IDX_PTR($src, uint8_t);
+          const uint8_t* src_r1 = src_r0 + row_mod;
+          const uint8_t* src_r2 = src_r1 + row_mod;
+          uint8_t* dst_px = dst_begin + (r * row_mod) + col_mod;
+          // Initialize column sums.
+          int col_sums[3] = {0};
+          for (int c = 0, offset = 0; c < 3; ++c, offset += col_mod)
+          {
+            col_sums[c] += *(src_r0 + offset) > 0;
+            col_sums[c] += *(src_r1 + offset) > 0;
+            col_sums[c] += *(src_r2 + offset) > 0;
+          }
+          for (int c = 0; c < col_steps; ++c,
+               // Advance rows.
+               src_r0 += col_mod, src_r1 += col_mod, src_r2 += col_mod,
+               // Shift column sums.
+               col_sums[0] = col_sums[1],
+               col_sums[1] = col_sums[2],
+               col_sums[2] = (*(src_r0 + plus_2_col) > 0) +
+                             (*(src_r1 + plus_2_col) > 0) +
+                             (*(src_r2 + plus_2_col) > 0),
+               dst_px += col_mod)
+          {
+            const int pixel_sum = (*src_r1 > 0) + col_sums[1] + (*(src_r1 + plus_2_col) > 0);
+            *dst_px = (5 == pixel_sum);
+          }
+        }
+        // Just black out border.
+        {
+          uint8_t* dst_px;
+          dst_px = dst_begin;
+          for (int c = 0; c < cols; ++c, dst_px += col_mod) { *dst_px = 0; }
+          dst_px = dst_begin + ((rows - 1) * row_mod);
+          for (int c = 0; c < cols; ++c, dst_px += col_mod) { *dst_px = 0; }
+          dst_px = dst_begin;
+          for (int r = 0; r < rows; ++r, dst_px += row_mod) { *dst_px = 0; }
+          dst_px = dst_begin + row_mod - col_mod;
+          for (int r = 0; r < rows; ++r, dst_px += row_mod) { *dst_px = 0; }
+        }
+      }
+      #}
+    )
+  ()
+  )
+
+#? (erode-test)
+;; Visual test of erosion.
+(de erode-test ()
+  (let* ((img-dim 300)
+         (img       (ubyte-matrix img-dim img-dim))
+         (img-erode (ubyte-matrix img-dim img-dim))
+         (scale 1)
+         )
+    ;; Generate a random image.
+    (idx-bloop ((img-r img)) (idx-bloop ((px img-r)) (px (to-int (+ (rand) 0.1)))))
+    (for (i 1 2) (ubim-dilation img 1))
+    (erode img img-erode)
+    (if (= () window) (new-window 640 480))
+    (cls)
+    (gray-draw-matrix 0                 0 img       0 1 scale scale)
+    (gray-draw-matrix (* scale img-dim) 0 img-erode 0 1 scale scale)
+    )
+  ()
+  )
+
+;; Resample a local feature map by solving a least squares optimization.
+(de fm-local-registration (fm-lcl fm-gbl fm-gbl-cell rot offset)
+  ;; Find correspondences by looking in a square neighborhood about the image of
+  ;; significant features in the global map projected into the local map.
+  ;; Define sigificant features by their feature vector
+  ;;   pts mean, pts variance, (TODO) rgb mean, rgb variance
+  (let* ((r (:fm-lcl:full-dim 0)) (c (:fm-lcl:full-dim 1)) 
+         (r-conv (- r 2))         (c-conv (- c 2))
+         (r-feat (- r 4))         (c-feat (- c 4))
+         (gbl-crop-ul (idx-sub fm-gbl-cell :fm-lcl:half-dim))
+         (fm-gbl-crop (narrow (narrow :fm-gbl:data 0 r (gbl-crop-ul 0)) 1 c (gbl-crop-ul 1)))
+         (fm-features (float-matrix-nc r c 2))
+         (fm-masks (ubyte-matrix-nc r c 2))
+         (fm-gbl-edge-kernel (float-matrix-nc 3 3))
+         (fm-features-conv (float-matrix-nc r-conv c-conv 2))
+         (point-match-mask (ubyte-matrix-nc r-feat r-feat))
+         )
+    (idx-pbloop ((fm-lcl-r :fm-lcl:data)
+                 (fm-gbl-r fm-gbl-crop)
+                 (fm-mask-r (select fm-masks 2 0))
+                 (fm-gbl-feat-r fm-features)
+                 )
+      (idx-bloop ((fm-lcl fm-lcl-r)
+                  (fm-gbl fm-gbl-r)
+                  (fm-mask fm-mask-r)
+                  (fm-gbl-feat fm-gbl-feat-r)
+                  )
+        ;; Update mask (will erode before selecting features).
+        (fm-mask (if (> (fm-lcl 0) 0) 1 0))
+        ;; Compute mean, variance.
+        (let ((num (fm-gbl 0))
+              (sum_x (fm-gbl 1))
+              (sum_xx (fm-gbl 2))
+              )
+          (if (<> 0 num)
+            (let* ((mu (/ sum_x num))
+                   (var (+ (/ (- sum_xx (* 2 (* mu sum_x))) num) (* mu mu)))
+                   )
+              (fm-gbl-feat 0 mu) (fm-gbl-feat 1 var)
+              )
+            (idx-clear fm-gbl-feat)
+            )
+          )
+        )
+      )
+    ;; Erode and show mask.
+;;    (idx-copy (select fm-masks 2 0) (select fm-masks 2 1))
+;;    (ubim-erosion (select fm-masks 2 1) 1)
+    (erode (select fm-masks 2 0) (select fm-masks 2 1))
+    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 1 r) (select fm-masks 2 1) 0 1 1 1)
+    ;; Compute scalar edge field for features.
+    (idx-f2fill fm-gbl-edge-kernel -1)(fm-gbl-edge-kernel 1 1 8)
+    (idx-f2convol (select fm-features 2 0) fm-gbl-edge-kernel (select fm-features-conv 2 0))
+    (idx-f2convol (select fm-features 2 1) fm-gbl-edge-kernel (select fm-features-conv 2 1))
+    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) (select fm-features-conv 2 0) 0 4 1 1)
+    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 3 r) (select fm-features-conv 2 1) 0 1 1 1)
+    ;; Perform unique feature detection in a 3x3 window.
+    (let* ((fm-feat-conv-m4 (unfold (unfold fm-features-conv 0 3 1) 1 3 1))
+           (mat-tmp (float-matrix-nc 3 3))
+           (fm-lcl-conv (narrow (narrow (narrow :fm-lcl:data 0 r-conv 0) 1 r-conv 0) 2 2 1))
+           (fm-lcl-neighbors (unfold (unfold fm-lcl-conv 0 3 1) 1 3 1))
+           (i 1) (j 1)
+           (px-correspond-gbl (double-matrix-nc 400 2))
+           (px-correspond-lcl (double-matrix-nc 400 2))
+           (num-pts 0)
+           )
+      (idx-bloop ((fm-feat-conv-m4-r fm-feat-conv-m4)
+                  (point-match-mask-r point-match-mask)
+                  (fm-mask-r (narrow (narrow (select fm-masks 2 1) 0 r-feat 1) 1 c-feat 1))
+                  (fm-gbl-r (narrow (narrow (narrow fm-gbl-crop 0 r-feat 1) 1 c-feat 1) 2 2 1))
+                  (fm-lcl-neighbors-r fm-lcl-neighbors)
+                  )
+        (setq j 1)
+        (idx-bloop ((fm-feat-conv-neigh fm-feat-conv-m4-r)
+                    (point-match point-match-mask-r)
+                    (mask fm-mask-r)
+                    (fm-gbl-pt fm-gbl-r)
+                    (fm-lcl-neighbors fm-lcl-neighbors-r)
+                    )
+          (let ((neigh-0-px (fm-feat-conv-neigh 0 1 1))
+                (neigh-1-px (fm-feat-conv-neigh 1 1 1))
+                (discard (= 0 (mask)))
+                )
+            (if (not discard)
+              (let ((inf-ratio-0 0) (inf-ratio-1 0))
+                (if (< (+ (abs neigh-0-px) (abs neigh-1-px)) 0.1)
+                  (setq discard t)
+                  ;; Check feature 0?
+                  (if (<> neigh-0-px 0)
+                    (progn
+                      (idx-f2dotc (select fm-feat-conv-neigh 0 0) (/ 1 neigh-0-px) mat-tmp)
+                      (idx-f2addc mat-tmp (- 1) mat-tmp)
+                      (idx-abs mat-tmp mat-tmp)
+                      (mat-tmp 1 1 (mat-tmp 0 0))
+                      (setq inf-ratio-0 ((idx-inf mat-tmp)))
+                      )
+                    )
+                  ;; Check feature 1?
+                  (if (<> neigh-1-px 0)
+                    (progn
+                      (idx-f2dotc (select fm-feat-conv-neigh 0 1) (/ 1 neigh-1-px) mat-tmp)
+                      (idx-f2addc mat-tmp (- 1) mat-tmp)
+                      (idx-abs mat-tmp mat-tmp)
+                      (mat-tmp 1 1 (mat-tmp 0 0))
+                      (setq inf-ratio-1 ((idx-inf mat-tmp)))
+                      )
+                    )
+                  )
+                ;; If any dimension is unique, then use the point.
+                (setq discard (and (< inf-ratio-0 0.5)(< inf-ratio-1 0.5)))
+                )
+              )
+            (if discard (point-match 0)
+              (progn
+                (point-match 1)
+                ;; find this point in the local map window.
+;;                (printf "found pt match (%d, %d)\n" i j)
+;;                (pretty fm-gbl-pt)
+;;                (pretty fm-lcl-neighbors)
+;;                (pretty (select (select :fm-lcl:data 0 i) 0 j))
+;;                (pretty (select (select fm-gbl-crop 0 i) 0 j))
+                (let ((diff-tmp (float-matrix-nc 2))
+                      (dist-sq [f@ 0])
+                      (min-dist-sq (idx-m1dotm1 fm-gbl-pt fm-gbl-pt))
+                      (min-cell [i 0 0])
+                      (world-cell-tmp (float-matrix-nc 2))
+                      (cell (int-matrix-nc 2))
+                      )
+                  ;; Subtract fm-gbl-pt from the neighborhood and take norm square.
+                  (for (i -1 1)
+                    (for (j -1 1)
+                      (diff-tmp 0 (- (fm-gbl-pt 0) (fm-lcl-neighbors 0 (+ i 1) (+ j 1))))
+                      (diff-tmp 1 (- (fm-gbl-pt 1) (fm-lcl-neighbors 1 (+ i 1) (+ j 1))))
+                      (idx-m1dotm1 diff-tmp diff-tmp dist-sq)
+                      (if (< (dist-sq) (min-dist-sq))
+                        (progn (idx-copy dist-sq min-dist-sq) (min-cell 0 i) (min-cell 1 j))
+                        )
+                      )
+                    )
+;;                  (printf "closest (%d,%d) = %f\n" (min-cell 0) (min-cell 1) (min-dist-sq))
+                  (cell 0 i) (cell 1 j)
+;;                  (pretty cell)
+                  (==> fm-lcl map-cell2world cell world-cell-tmp)
+                  (idx-copy world-cell-tmp (select px-correspond-gbl 0 num-pts))
+                  (idx-add cell min-cell cell)
+;;                  (pretty cell)
+                  (==> fm-lcl map-cell2world cell world-cell-tmp)
+                  (idx-copy world-cell-tmp (select px-correspond-lcl 0 num-pts))
+                  (incr num-pts)
+                  )
+                )
+              )
+            )
+          (incr j)
+          )
+        (incr i)
+        )
+      (gray-draw-matrix (:fm-gbl:full-dim 1) (* 4 r) point-match-mask 0 1 1 1)
+      (if (> num-pts 0)
+        (progn
+          (printf "there were %d point corrrecpondances\n" num-pts) 
+          (map-registration (narrow px-correspond-gbl 0 num-pts 0)
+                            (narrow px-correspond-lcl 0 num-pts 0) rot offset)
+          (pretty rot)
+          (pretty offset)
+          )
+        )
+      )
+    )
+;;  ;; Set tform to identity for now.
+;;  (idx-clear rot)
+;;  (for (i 1 (idx-dim rot 0)) (rot mat i i 1))
+;;  (idx-clear offset)
+  )
+
+;; Take a local feature map and integrate it into a global feature map.
+(de fm-global-update (fm-global cm-global cm-global-rgb fm-global-cell fm-local time-now)
+  ((-obj- (feature-map)) fm-global)
+  ((-obj- (cost-map)) cm-global)
+  ((-idx3- (-int-)) cm-global-rgb)
+  ((-idx1- (-int-)) fm-global-cell)
+  ((-obj- (feature-map)) fm-local)
+  ((-float-) time-now)
+  ;; Decay the global feature map.
+  (fm-global-decay fm-global cm-global cm-global-rgb @COST_MAP_GLOBAL_TTL_SECONDS time-now)
+  ;; Integrate fm-local into fm-global.
+  (let ((ul (idx-sub fm-global-cell :fm-local:half-dim))
+        (lr (idx-add fm-global-cell :fm-local:half-dim))
+        (roi (int-matrix-nc 4))
+        (mask-rows 0)
+        (mask-cols 0)
+        )
+    (roi 0 (max (ul 0) 0))
+    (roi 1 (max (ul 1) 0))
+    (roi 2 (min (lr 0) (:fm-global:full-dim 0)))
+    (roi 3 (min (lr 1) (:fm-global:full-dim 1)))
+    (setq mask-rows (+ (- (roi 2) (roi 0)) 1))
+    (setq mask-cols (+ (- (roi 3) (roi 1)) 1))
+    ;; Make sure that mask is in bounds.
+    (if (or (<= mask-rows 0) (<= mask-cols 0))
+      () ;; Do nothing when mask is out of bounds.
+
+      ;; Mask fm-global, cm-global and integrate fm-local.
+      (let ((fm-global-mask
+              (narrow (narrow :fm-global:data 0 mask-rows (ul 0)) 1 mask-cols (ul 1)))
+            (cm-global-mask
+              (narrow (narrow :cm-global:data 0 mask-rows (ul 0)) 1 mask-cols (ul 1)))
+           )
+        ;; TODO(reissb) -- Clip fm-local.
+        (idx-pbloop ((fm-global-r fm-global-mask)(fm-local-r :fm-local:data))
+          (idx-bloop ((fm-g fm-global-r)(fm-l fm-local-r))
+            ;; Weighted average of the features.
+            (if (= (fm-l 0) 0)
+              () ;; Do nothing when there is no data (already decayed).
+
+              (let ((fm-g-v3 (narrow fm-g 0 3 0)))
+                ;; See if this is the first update.
+                (if (= (fm-g 0) 0)
+                  ;; No average for first update.
+                  (idx-copy fm-l fm-g-v3)
+                  ;; Else average.
+                  (let ((prev-data-wt (- 1.0 @COST_MAP_GLOBAL_EXP_MOV_AVG_WT))
+                        (update-data-weighted (float-matrix-nc 3))
+                        )
+                    ;; Exponential moving average.
+                    (idx-f1dotc fm-l @COST_MAP_GLOBAL_EXP_MOV_AVG_WT update-data-weighted)
+                    (idx-f1dotc fm-g-v3 prev-data-wt fm-g-v3)
+                    (idx-add fm-g-v3 update-data-weighted fm-g-v3)
+                    )
+                  )
+                ;; Update last-seen time.
+                (fm-g 3 time-now)
+                )
+              )
+            )
+          )
+        ;; Compute global cost map.
+        (feature-map2cost-map fm-global-mask cm-global-mask)
+        )
+      )
+    )
+  )
+
+(de xyz2global-feature-map-test (tb n)
+  (==> tb start-sub-camera-depth-points)
+;;  (==> tb start-sub-robot-pose-ekf)
+;;  (==> tb start-sub-odom)
+  ;; Create feature, cost, and cost rgb maps.
+  (let* ((scale [f 0.05 0.05])
+         (fm-global (new feature-map [i 300 300] scale 4))
+         (cm-global ())
+         (cm-global-rgb ())
+         (fm-local (new feature-map [i 65 65] scale 3))
+         (cm-local ())
+         (cm-local-rgb ())
+         (fm-global-cell ())
+         (tmr (new stopwatch))
+         )
+    (idx-pbloop ((fm-global-r :fm-global:data))
+      (idx-bloop ((fm-g fm-global-r))
+        (fm-g 3 (- (infinity)))
+        )
+      )
+    ;; Setup cost maps.
+    (idx-copy :fm-global:half-dim :fm-global:center)
+    (setq cm-global (new cost-map fm-global))
+    (setq cm-global-rgb (int-matrix (:cm-global:full-dim 0) (:cm-global:full-dim 1) 3))
+    (idx-copy :fm-local:half-dim :fm-local:center)
+    (setq cm-local (new cost-map fm-local))
+    (setq cm-local-rgb (int-matrix (:cm-local:full-dim 0) (:cm-local:full-dim 1) 3))
+    ;; Place feature map center.
+    ;; Create properly sized window if it doesn't exist.
+    (if (not window) (
+      let ((wnd-width 0)(wnd-height 0))
+        (setq wnd-width (+ (idx-dim cm-global-rgb 1) (idx-dim cm-local-rgb 1)))
+        (setq wnd-height (idx-dim cm-global-rgb 0))
+        (new-window 0 0 wnd-width wnd-height)
+        )
+      )
+    ;; Do n loops of processing.
+    (for (i 0 (- n 1))
+      ;; Grab new data.
+;;      (while (< (==> tb update-robot-pose-ekf) 0) ())
+;;      (while (< (==> tb update-odom) 0) ())
+      (while (< (==> tb update-camera-depth-points) 0) ())
+      ;; Convert points to feature map.
+      (let ((odom-pos (float-matrix-nc 3))
+            (odom-orien (float-matrix-nc 4))
+           )
+        (idx-clear odom-pos)
+        (idx-clear odom-orien)(odom-orien 3 1)
+;;        (idx-copy :tb:robot-pose-ekf-position odom-pos)
+;;        (idx-copy :tb:robot-pose-ekf-orientation odom-orien)
+;;        (idx-copy :tb:odom-pose-position odom-pos)
+;;        (idx-copy :tb:odom-pose-orientation odom-orien)
+        ;; Flip the angle.
+        (odom-orien 3 (- (odom-orien 3)))
+        (setq fm-global-cell (xyz2global-feature-map :tb:camera-depth-points
+                                                     odom-pos odom-orien
+                                                     turtlebot-c2v fm-global fm-local))
+        )
+      (progn (feature-map2cost-map :fm-local:data :cm-local:data)
+             (setq :cm-local:pcl-density :fm-local:pcl-density))
+      ;; Register feature maps using visual odometry.
+      (let ((rot-correct (double-matrix-nc 2 2))
+            (offset-correct (double-matrix-nc 2))
+            )
+        (fm-local-registration fm-local fm-global fm-global-cell rot-correct offset-correct)
+      )
+      ;; Update global map (with cost map rgb optimizations).
+      (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr get))
+      ;; Prepare for display.
+      (cost-map2rgb 0.5 cm-global cm-global-rgb)
+      (cost-map2rgb 0.5 cm-local cm-local-rgb)
+      ;; Draw maps.
+      (rgb-draw-matrix 0 0 cm-global-rgb 1 1)
+      (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1)
+      )
+    )
+  )
+
+;;(let ((dhc-make-lushflags (concat dhc-make-lushflags " -fopenmp")))
+  (dhc-make-with-c++ () () ;;"/usr/lib/gcc/i486-linux-gnu/4.4/libgomp.so"
+    prototype-cpp-dummy
+    quaternion2matrix
+    xyz2global-feature-map
+    fm-global-decay
+    fm-global-update
+    erode
+    )
+;;  )
+
