@@ -97,7 +97,7 @@
 (defconstant "FEATURE_MAP_7_NUM_HT_BIN_4" 7)
 (defconstant "FEATURE_MAP_IDX_COUNT"      8)
 (defconstant "FEATURE_MAP_HT_BIN_COUNT"   5)
-(defconstant "FEATURE_MAP_HT_BIN_CM"     60)
+(defconstant "FEATURE_MAP_HT_BIN_CM"     30)
 #?  (xyz2feature-map <xyz> <transform> <fm>)
 ;; Fill in feature map for each map cell using the point cloud <xyz>
 ;;   Features:

@@ -303,13 +303,15 @@
           )
         )
       )
-    ;; Erode and show mask.
-    ;;(erode (select fm-masks 2 0) (select fm-masks 2 1))
+    ;; Copy masks unchanged.
     (idx-copy (select fm-gbl-masks 2 0 )(select fm-gbl-masks 2 1))
     (idx-copy (select fm-lcl-masks 2 0 )(select fm-lcl-masks 2 1))
-    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 1 r) (select fm-lcl-masks 2 1) 0 1 1 1)
-    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 0 r) (select fm-gbl-feat 2 0) 0 3.0 1 1)
-    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 1 r) (select fm-gbl-feat 2 1) 0 0.5 1 1)
+;;    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 1 r) (select fm-lcl-masks 2 1) 0 1 1 1)
+;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 0 r) (select fm-gbl-feat 2 2) 0 1 1 1)
+;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 1 r) (select fm-gbl-feat 2 3) 0 1 1 1)
+;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 2 r) (select fm-gbl-feat 2 4) 0 1 1 1)
+;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 3 r) (select fm-gbl-feat 2 5) 0 1 1 1)
+;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 4 r) (select fm-gbl-feat 2 6) 0 1 1 1)
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
@@ -422,8 +424,8 @@
                   (min-dist-sq-1 (double-inf))
                   (img-dispar-match 1 255)
                   (printf "interest-pt (%d, %d), p = %f, fm-gbl-feat-pt =\n" i j p)
-                  (pretty fm-gbl-feat-pt)
-                  (pretty fm-gbl-pt)
+;;                  (pretty fm-gbl-feat-pt)
+;;                  (pretty fm-gbl-pt)
                   ;; Find this point in the local map.  Subtract global point from the
                   ;; local neighborhood and take norm square.
                   (for (i (- window-dim) window-dim)
@@ -451,11 +453,11 @@
                       )
                     )
                   ;; We have a match when the second closest far enough from the first.
-                  (if (< (/ (min-dist-sq-1) (min-dist-sq-0)) 1.2)
+                  (if (< (/ (min-dist-sq-1) (min-dist-sq-0)) 1.0)
                     ;; No match when second closest is also very close.
                     (printf "no match : closest = %f, 2nd = %f\n" (min-dist-sq-0) (min-dist-sq-1))
-                    (pretty (select (select fm-lcl-feat 0 (+ i (match-offset 0)))
-                                                        0 (+ j (match-offset 1))))
+;;                    (pretty (select (select fm-lcl-feat 0 (+ i (match-offset 0)))
+;;                                                        0 (+ j (match-offset 1))))
                     (printf "closest (%d,%d) = %f\n" (match-offset 0) (match-offset 1) (min-dist-sq-0))
                     (cell 0 i) (cell 1 j)
                     (==> fm-lcl map-cell2world cell world-cell-tmp)
@@ -474,7 +476,7 @@
           (incr i)
           )
         )
-        (rgb-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) img-dispar-match 1 1)
+;;        (rgb-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) img-dispar-match 1 1)
         ;; Perform registration between maps when there are enough point correspondences.
         (if (>= num-matched 6)
           (let ((rot-d (double-matrix-nc 2 2))
@@ -681,7 +683,7 @@
     fm-global-decay
     fm-global-update
     erode
-;;    fm-local-registration
+    fm-local-registration
     )
 ;;  )
 
