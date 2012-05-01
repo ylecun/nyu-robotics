@@ -1,0 +1,125 @@
+
+;; To pick a particular BLAS implementation,
+;; set the global blas-type to either , "atlas-local",
+;; "openblas-local", "openblas", "atlas", or "mkl". If the 
+;; variable is not set, Lush will look for each of the above (in
+;; that order), and use the first one it finds.
+;; If not, it will use the generic code (slow).
+;; The atlas and mkl modes don't work at this time.
+
+;; results on MacBook Air for: (blas-test 500 100)
+;; atlas-local:    real time = 1.19, mega-multiply-accumulate/s = 10442.7736
+;; openblas-local: real time = 1.36, mega-multiply-accumulate/s = 9191.1765
+;; openblas:       real time = 1.65, mega-multiply-accumulate/s = 7566.586
+;; atlas:          CRASHES
+;; mkl:            can't find some functions definitions (need to fix library list)
+
+(when (not no-openmp) (libload "openmp"))
+  
+(when (not mkl-path) (defparameter mkl-path "/opt/intel/mkl"))
+
+;; git clone git://github.com/xianyi/OpenBLAS.git
+;; cd OpenBLAS/
+;; quickbuild.64bit 
+;; OR
+;; make BINARY=64 TARGET=nehalem
+;; sudo make install PREFIX=/usr/local
+(cond
+ ((or (= blas-type "atlas-local") 
+      (and (not blas-type) (filep "/usr/local/atlas/lib/libatlas.a")))
+  (defparameter blas-type "atlas-local")
+  (printf "found local installation of ATLAS\n")
+  (defparameter blas-libdir "/usr/local/atlas/lib")
+  (defparameter blas-libs 
+    (all ((x '("libptcblas.a" "libatlas.a" "liblapack.a"))) (concat blas-libdir "/" x)))
+  (defparameter blas-includedir "/usr/local/atlas/include")
+  (defparameter blas-includes 
+    (sprintf "#include <math.h>\n#include \"%s/cblas.h\"\n#include \"%s/clapack.h\"\n" 
+	     blas-includedir blas-includedir))
+  )
+ ((or (= blas-type "openblas-local") 
+      (and (not blas-type) (filep "/usr/local/lib/libopenblas.so")))
+  (defparameter blas-type "openblas-local")
+  (printf "found local installation of OpenBLAS\n")
+  (defparameter blas-libdir "/usr/local/lib")
+  (defparameter blas-libs 
+    (all ((x '("libopenblas.so"))) (concat blas-libdir "/" x)))
+  (defparameter blas-includedir "/usr/local/include")
+  (defparameter blas-includes 
+    (sprintf "#include <math.h>\n#include \"%s/cblas.h\"\n" blas-includedir))
+  )
+ ((or (= blas-type "openblas") 
+      (and (not blas-type) (filep "/usr/local/openblas-base/libopenblas.so")))
+  (defparameter blas-type "openblas")
+  (printf "found system installation of OpenBLAS\n")
+  (defparameter blas-libdir "/usr/lib/openblas-base")
+  (defparameter blas-libs 
+    (all ((x '("libopenblas.so"))) (concat blas-libdir "/" x)))
+  (defparameter blas-includedir "/usr/include")
+  (defparameter blas-includes 
+    (sprintf "#include <math.h>\n#include \"%s/cblas.h\"\n" blas-includedir))
+  )
+ ((or (= blas-type "atlas") 
+      (and (not blas-type) (filep "/usr/lib/atlas-base/libatlas.a")))
+  (defparameter blas-type "atlas")
+  (printf "found system installation of ATLAS\n")
+  (printf "**** this is broken and will crash***\n")
+  (defparameter blas-libdir "/usr/lib/atlas-base")
+  (defparameter blas-libs 
+    (all ((x '("libptcblas.a" "libatlas.a"))) (concat blas-libdir "/" x)))
+  (defparameter blas-includedir "/usr/include/atlas")
+  (defparameter blas-includes 
+    (sprintf "#include <math.h>\n#include \"%s/cblas.h\"\n#include \"%s/clapack.h\"\n" 
+	     blas-includedir blas-includedir))
+  )
+ ;; doesn't quite work yet
+ ((or (= blas-type "mkl") 
+      (and (not blas-type) (filep (concat mkl-path "/include/mkl_blas.h"))))
+  (defparameter blas-type "mkl")
+  (printf "found installation of Intel MKL\n")
+  (defparameter blas-libdir (concat mkl-path "/lib/intel64"))
+  (setq shared-library-path (cons blas-libdir shared-library-path))
+  (setq shared-library-path 
+	(cons (concat mkl-path "../compiler/lib/intel64") shared-library-path))
+  (defparameter blas-libs 
+    (all ((x '("libiomp5.a" "libmkl_intel_thread.a" "libmkl_core.a" "libmkl_intel_lp64.a")))
+      (find-static-library x)))
+  (defparameter blas-includedir (concat mkl-path "/include"))
+  (defparameter blas-includes 
+    (sprintf "#include <math.h>\n#include \"%s/mkl_cblas.h\"\n" blas-includedir))
+  )
+ (t   
+  (defparameter blas-type "generic")
+  (printf "using generic BLAS\n")
+  (defparameter blas-libdir "/usr/lib")
+  (defparameter blas-multi-thread ())
+  (defparameter blas-libs 
+    (error "please edit blas-config.lsh and put the right default blas libs here"))
+  (defparameter blas-includedir "/usr/include")
+  (defparameter blas-includes 
+    (error "please edit blas-config.lsh and put the right default blas includes here"))
+  ))
+
+;; if you don't install from source, 
+;; you have to install:
+;; refblas3
+;; refblas3-dev
+;; atlas3-headers
+;; atlas3-sse2, or whatever version is appropriate for your machine
+;; atlas3-sse2-dev
+
+;; set this to the directory where the Atlas libraries 
+;; reside: liblapack_atlas.so, libcblas.so and libatlas.so
+;; (defparameter blas-libdir "/usr/local/lib")
+
+;; st this to the directory where the ATLAS/cblas/lapack
+;; header files cblas.h and clapack.h reside:
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; these don't need to be changed.
+
+(when openmp-libs (setq blas-libs (append openmp-libs blas-libs)))
+
+;; dummy function to get the header files in the C file.
+(eval `(de blas-dummy () ,(list 'cpheader blas-includes) ()))
+

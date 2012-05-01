@@ -1,0 +1,64 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; when openmp-libs is non-nil, openmp is installed.
+(defparameter openmp-libs (find-shared-library "libgomp.so.1"))
+
+(when (not openmp-libs)
+ (error "could not find openmp library"))
+
+(setq openmp-libs (list openmp-libs))
+
+(defparameter openmp-cflags " -fopenmp")
+(defparameter openmp-include "#include <omp.h>")
+(eval `(de openmp-dummy () ,(list 'cpheader openmp-include) ()))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#? (openmp-set-num-threads <n>)
+;; Set number of threads to be used by next
+;; omp parallel call.
+(de openmp-set-num-threads(n)
+  ((-int-) n)
+  #{ omp_set_num_threads($n) #} ())
+
+#? (openmp-get-num-threads )
+;; Return the number of threads created inside an
+;; omp parallel section. This will always return
+;; 1 if outside a omp parallel section.
+(de openmp-get-num-threads () (to-int #{ omp_get_num_threads() #}))
+
+#? (openmp-get-num-threads )
+;;  Returns maximum number of threads that could be used to form a new
+;; team using a “parallel” construct without  a “num_threads” claus
+(de openmp-get-max-threads () (to-int #{ omp_get_max_threads() #}))
+
+#? (openmp-get-thread-num )
+;; Returns the ID of the encountering thread where ID ranges from zero 
+;; to the size of the team minus 1.
+(de openmp-get-thread-num () (to-int #{ omp_get_thread_num() #}))
+
+#? (openmp-get-num-procs )
+;; Returns the number of processors available to the program.
+(de openmp-get-num-procs ()
+  (to-int #{ omp_get_num_procs() #}))
+
+#? (openmp-set-dynamic )
+;; Returns the number of processors available to the program.
+(de openmp-set-dynamic (f)
+  ((-int-) f)
+  #{ omp_set_dynamic($f) #} ())
+
+(let ((dhc-make-lushflags (concat dhc-make-lushflags openmp-cflags)))
+  (dhc-make-with-libs 
+   ()
+   openmp-libs
+   openmp-dummy
+   openmp-get-num-threads
+   openmp-set-num-threads
+   openmp-get-max-threads
+   openmp-get-thread-num
+   openmp-get-num-procs
+   openmp-set-dynamic
+   ))
+
+

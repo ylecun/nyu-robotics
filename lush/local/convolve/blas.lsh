@@ -1,0 +1,321 @@
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Fast Linear Algebra using Atlas
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(libload "blas-config")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? ** Fast Linear Algebra using Atlas or OpenBLAS, or generic BLAS
+;; This package implements some common linear
+;; algebra operations using the fast Atlas library.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(dm cblas-err-notcontig (d m)
+  `(when (<> 1 (idx-modulo ,m 1))
+     (error "row elements are not contiguous")))
+
+
+#? * Low-Level CBLAS and CLAPACK functions
+;; These functions provide a direct interface
+;; to some CBLAS and CLAPACK linear algebra functions
+
+#? (cblas-xgemv <ta> <alpha> <a> <x> <beta> <y>)
+;; performs the matrix-vector operation
+;; <y = alpha*a*x + beta*y>
+;; where <a> is an idx2 of double, and <x> and <y> are 
+;; idx1 of double. <ta> is a boolean that indicates 
+;; whether <a> is to be transposed prior to performing 
+;; the operation.
+(dm cblas-xgemv (f ta alpha a x beta y type)
+  (let* ((ctype (selectq type ("d" "double") ("s" "float") 
+			 ("z" "double") ("c" "float")))
+	 (mtype (selectq type ("d" '(-idx2- (-double-))) ("s" '(-idx2- (-float-)))
+			 ("z" '(-idx3- (-double-))) ("c" '(-idx3- (-float-)))))
+	 (vtype (selectq type ("d" '(-idx1- (-double-))) ("s" '(-idx1- (-float-)))
+			 ("z" '(-idx2- (-double-))) ("c" '(-idx2- (-float-)))))
+	 (stype (selectq type ("d" '(-double-)) ("s" '(-float-))
+			 ("z" '(-idx1- (-double-))) ("c" '(-idx1- (-float-)))))
+	 (name (concat "cblas_" type "gemv")))
+  `(progn
+    ((-bool-) ,ta) 
+    (,stype ,alpha ,beta)
+    (,mtype ,a)
+    (,vtype ,x ,y)
+    (let ((m (idx-dim ,a (to-int (if ,ta 1 0))))
+	  (na (idx-dim ,a (to-int (if ,ta 0 1))))
+	  (n (idx-dim ,x 0))
+	  (amod0 (idx-modulo ,a 0))
+	  (xmod0 (idx-modulo ,x 0))
+	  (ymod0 (idx-modulo ,y 0))
+	  (transa (if ,ta 112 111)))
+      ((-int-) m n na transa) 
+      ((-int-) amod0 xmod0 ymod0)
+      (cblas-err-notcontig ,a)
+      (when (or (<> m (idx-dim ,y 0)) (<> n na))
+	(error "inconsistent sizes"))
+      (cinline 
+       ,(if (or (= type "c") (= type "z"))
+	    (sprintf "%s(CblasRowMajor, %%s, %%s, %%s, IDX_PTR(%%s,%s), IDX_PTR(%%s,%s), %%s, IDX_PTR(%%s,%s), %%s, IDX_PTR(%%s,%s), IDX_PTR(%%s,%s), %%s);" 
+		  name ctype ctype ctype ctype ctype)
+	  (sprintf "%s(CblasRowMajor, %%s, %%s, %%s, %%s, IDX_PTR(%%s,%s), %%s, IDX_PTR(%%s,%s), %%s, %%s, IDX_PTR(%%s,%s), %%s);" 
+		  name ctype ctype ctype))
+       transa m n ,alpha ,a amod0 ,x xmod0 ,beta ,y ymod0) ()))))
+
+(de cblas-dgemv (ta alpha a x beta y)
+  (cblas-xgemv ta alpha a x beta y "d"))
+(de cblas-sgemv (ta alpha a x beta y) 
+  (cblas-xgemv ta alpha a x beta y "s"))
+(de cblas-cgemv (ta alpha a x beta y) 
+  (cblas-xgemv ta alpha a x beta y "c"))
+(de cblas-zgemv (ta alpha a x beta y) 
+  (cblas-xgemv ta alpha a x beta y "z"))
+
+
+#? (cblas-dgemv-old <ta> <alpha> <a> <x> <beta> <y>)
+;; performs the matrix-vector operation
+;; <y = alpha*a*x + beta*y>
+;; where <a> is an idx2 of double, and <x> and <y> are 
+;; idx1 of double. <ta> is a boolean that indicates 
+;; whether <a> is to be transposed prior to performing 
+;; the operation.
+(de cblas-dgemv-old (ta alpha a x beta y)
+  ((-bool-) ta) 
+  ((-double-) alpha beta)
+  ((-idx2- (-double-)) a)
+  ((-idx1- (-double-)) x y)
+  (let ((m (idx-dim a (to-int (if ta 1 0))))
+	(na (idx-dim a (to-int (if ta 0 1))))
+	(n (idx-dim x 0))
+	(amod0 (idx-modulo a 0))
+	(xmod0 (idx-modulo x 0))
+	(ymod0 (idx-modulo y 0))
+	(transa (if ta 112 111)))
+    ((-int-) m n na transa) 
+    ((-int-) amod0 xmod0 ymod0)
+    (when (<> 1 (idx-modulo a 1))
+      (error "row elements are not contiguous"))
+    (when (or (<> m (idx-dim y 0)) (<> n na))
+      (error "inconsistent sizes"))
+    #{ cblas_dgemv(CblasRowMajor,
+                   $transa,
+                   $m, $n, $alpha,
+                   IDX_PTR($a,double), $amod0,
+                   IDX_PTR($x,double), $xmod0,
+                   $beta,
+                   IDX_PTR($y,double), $ymod0); #}
+    ()) ())
+
+
+
+#? (cblas-dgemm <ta> <tb> <alpha> <a> <b> <beta> <c>)
+;; performs a matrix-matrix operation
+;; <c = alpha*a*b + beta*c>
+;; where <a>,<b>, and <c> are idx2 of double.
+;; <ta> and <tb> are booleans that indicate whether <a> 
+;; and <b> are to be transposed prior to performing the 
+;; operation.
+(de cblas-dgemm (ta tb alpha a b beta c)
+  ((-bool-) ta tb) 
+  ((-double-) alpha beta)
+  ((-idx2- (-double-)) a b c)
+  (let ((m (idx-dim a (to-int (if ta 1 0))))
+	(n (idx-dim b (to-int (if tb 0 1))))
+	(k (idx-dim a (to-int (if ta 0 1))))
+	(kb (idx-dim b (to-int (if tb 1 0))))
+	(amod0 (idx-modulo a 0))
+	(bmod0 (idx-modulo b 0))
+	(cmod0 (idx-modulo c 0))
+	(transa (if ta 112 111))
+	(transb (if tb 112 111)))
+    ((-int-) m n k kb transa transb) 
+    ((-int-) amod0 bmod0 cmod0)
+    (when (or (<> 1 (idx-modulo a 1)) 
+	      (<> 1 (idx-modulo b 1)) 
+	      (<> 1 (idx-modulo c 1))) 
+      (error "row elements are not contiguous"))
+    (when (<> k kb) (error "inconsistent sizes"))
+    #{ cblas_dgemm(CblasRowMajor,
+                   $transa,$transb,
+                   $m, $n, $k, $alpha,
+                   IDX_PTR($a,double), $amod0,
+                   IDX_PTR($b,double), $bmod0,
+                   $beta,
+                   IDX_PTR($c,double), $cmod0); #}
+    ()) ())
+
+#? (cblas-sgemm <ta> <tb> <alpha> <a> <b> <beta> <c>)
+;; performs a matrix-matrix operation
+;; <c = alpha*a*b + beta*c>
+;; where <a>,<b>, and <c> are idx2 of double.
+;; <ta> and <tb> are booleans that indicate whether <a> 
+;; and <b> are to be transposed prior to performing the 
+;; operation.
+(de cblas-sgemm (ta tb alpha a b beta c)
+  ((-bool-) ta tb) 
+  ((-float-) alpha beta)
+  ((-idx2- (-float-)) a b c)
+  (let ((m (idx-dim a (to-int (if ta 1 0))))
+	(n (idx-dim b (to-int (if tb 0 1))))
+	(k (idx-dim a (to-int (if ta 0 1))))
+	(kb (idx-dim b (to-int (if tb 1 0))))
+	(amod0 (idx-modulo a 0))
+	(bmod0 (idx-modulo b 0))
+	(cmod0 (idx-modulo c 0))
+	(transa (if ta 112 111))
+	(transb (if tb 112 111)))
+    ((-int-) m n k kb transa transb) 
+    ((-int-) amod0 bmod0 cmod0)
+    (when (or (<> 1 (idx-modulo a 1)) 
+	      (<> 1 (idx-modulo b 1)) 
+	      (<> 1 (idx-modulo c 1))) 
+      (error "row elements are not contiguous"))
+    (when (<> k kb) (error "inconsistent sizes"))
+    #{ cblas_sgemm(CblasRowMajor,
+                   $transa,$transb,
+                   $m, $n, $k, $alpha,
+                   IDX_PTR($a,float), $amod0,
+                   IDX_PTR($b,float), $bmod0,
+                   $beta,
+                   IDX_PTR($c,float), $cmod0); #}
+    ()) ())
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; User-friendly macros.
+;; You can look at how these macros get expanded
+;; by doing something like (macro-expand (m*m-d a b))
+
+
+#? * User-Friendly Linear Algebra Functions
+;; These functions provide a simplified interface
+;; to the low-level CBLAS and CLAPACK functions
+
+#? (m*m-d <a> <b> [<c>])
+;; matrix-matrix multiplication: multiplies matrix <a>
+;; by matrix <b> (which must be idx2 of doubles
+;; with appropriate sizes). If argument <c> is
+;; present, the result is written in it. If <c>
+;; is not present, a suitable matrix is allocated and 
+;; returned. This macro calls <cblas-dgemm> internally.
+(dm m*m-d (f a b . rest) 
+  (cond
+   ((= 1 (length rest))
+    `(cblas-dgemm () () 1.0 ,a ,b 0.0 ,(car rest)))
+   ((not rest)
+    `(let ((c (double-matrix (idx-dim ,a 0) (idx-dim ,b 1))))
+       (cblas-dgemm () () 1.0 ,a ,b 0.0 c) c))
+   (t (error "m*m-d: invalid number of arguments"))))
+
+
+#? (m*m-s <a> <b> [<c>])
+;; matrix-matrix multiplication: multiplies matrix <a>
+;; by matrix <b> (which must be idx2 of floats
+;; with appropriate sizes). If argument <c> is
+;; present, the result is written in it. If <c>
+;; is not present, a suitable matrix is allocated and 
+;; returned. This macro calls <cblas-dgemm> internally.
+(dm m*m-s (f a b . rest) 
+  (cond
+   ((= 1 (length rest))
+    `(cblas-sgemm () () 1.0 ,a ,b 0.0 ,(car rest)))
+   ((not rest)
+    `(let ((c (float-matrix (idx-dim ,a 0) (idx-dim ,b 1))))
+       (cblas-sgemm () () 1.0 ,a ,b 0.0 c) c))
+   (t (error "m*m-s: invalid number of arguments"))))
+
+
+#? (m*v-d <a> <x> [<y>])
+;; matrix-vector multiplication: multiplies matrix <a>
+;; by vector <x> in double precision. If argument <y> is
+;; present, the result is written in it. If <y>
+;; is not present, a suitable vector is allocated and 
+;; returned. This macro calls <cblas-dgemv> internally.
+(dm m*v-d (f a x . rest) 
+  (cond
+   ((= 1 (length rest))
+    `(cblas-dgemv () 1.0 ,a ,x 0.0 ,(car rest)))
+   ((not rest)
+    `(let ((y (double-matrix (idx-dim ,a 0))))
+       (cblas-dgemv () 1.0 ,a ,x 0.0 y) y))
+   (t (error "m*v-d: invalid number of arguments"))))
+
+#? (m*v-s <a> <x> [<y>])
+;; matrix-vector multiplication: multiplies matrix <a>
+;; by vector <x> in single precision. If argument <y> is
+;; present, the result is written in it. If <y>
+;; is not present, a suitable vector is allocated and 
+;; returned. This macro calls <cblas-dgemv> internally.
+(dm m*v-s (f a x . rest) 
+  (cond
+   ((= 1 (length rest))
+    `(cblas-sgemv () 1.0 ,a ,x 0.0 ,(car rest)))
+   ((not rest)
+    `(let ((y (float-matrix (idx-dim ,a 0))))
+       (cblas-sgemv () 1.0 ,a ,x 0.0 y) y))
+   (t (error "m*v-d: invalid number of arguments"))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(de mat-random-fill (r)
+  ((-idx2- (-double-)) r)
+  (idx-bloop ((r r)) (idx-bloop ((r r)) (r (rand -1 1)))))
+
+(de blas-test (n p)
+  (let ((r (double-matrix n n)) 
+	(m (double-matrix n n)) 
+	(q (double-matrix n n)))
+    (mat-random-fill r)
+    (mat-random-fill m)
+    (mat-random-fill q)
+    (let ((tim (realtime (repeat p (m*m-d r m q)))))
+      (printf "blas-type=%s\n" blas-type)
+      (printf "blas: real time = %g, mega-multiply-accumulate/s = %g\n" 
+	      tim (/ (* p (idx-dim r 0) (idx-dim m 0) (idx-dim m 1)) (* 1e6 tim))))))
+
+(de blas-test-lush (n p)
+  (let ((r (double-matrix n n)) 
+	(m (double-matrix n n)) 
+	(q (double-matrix n n)))
+    (mat-random-fill r)
+    (mat-random-fill m)
+    (mat-random-fill q)
+    (let ((tim (realtime (repeat p (idx-m2timesm2 r m q)))))
+      (printf "blas-type=%s\n" "default lush matrix multiplication")
+      (printf "lush : real time = %g, mega-multiply-accumulate/s = %g\n" 
+	      tim (/ (* p (idx-dim r 0) (idx-dim m 0) (idx-dim m 1)) (* 1e6 tim))))))
+
+(de blas-test2 (n &optional (nk 8) (ki 9) (kj 9) (si 480) (sj 640))
+  (let ((a (matrix (* (1+ (- si ki)) (1+ (- sj kj))) (* ki kj)))
+	(b (matrix (* ki kj) nk))
+	(c (matrix (* (1+ (- si ki)) (1+ (- sj kj))) nk)))
+    (mat-random-fill a)
+    (mat-random-fill b)
+    (mat-random-fill c)
+    (let ((tim (realtime (repeat n (cblas-dgemm () () 1.0 a b 0.0 c)))))
+      (printf "blas: real time = %g, mega-multiply-accumulate/s = %g\n" 
+	      tim (/ (* n (idx-dim a 0) (idx-dim b 0) (idx-dim b 1)) (* 1e6 tim))))
+    (let ((tim (realtime (repeat n (idx-m2timesm2 a b c)))))
+      (printf "lush : real time = %g, mega-multiply-accumulate/s = %g\n" 
+	      tim (/ (* n (idx-dim a 0) (idx-dim b 0) (idx-dim b 1)) (* 1e6 tim))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; compile
+(dhc-make-with-libs 
+ () 
+ blas-libs
+ blas-dummy
+
+ ;; cblas-err-notcontig
+
+ cblas-dgemm
+ cblas-sgemm
+
+ cblas-dgemv
+ cblas-sgemv
+ cblas-zgemv
+ cblas-cgemv
+
+ mat-random-fill
+ )
+
