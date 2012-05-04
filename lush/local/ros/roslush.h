@@ -1,10 +1,15 @@
-#include "ros/ros.h"
+#ifndef _LUSH_ROSLUSH_H_
+#define _LUSH_ROSLUSH_H_
 #include "ros/exceptions.h"
+#include "ros/ros.h"
 #include "boost/scoped_ptr.hpp"
 #include <exception>
 #include <string>
 #include <iostream>
 #include <stdint.h>
+
+// Flags used when client components receive message updates.
+enum { DATA_COPY_RELEASE, DATA_COPY_HOLD_REF, };
 
 /// <summary> Generic ROS subscriber logic. </summary>
 template <typename RosLushSubscriberTraits>
@@ -18,7 +23,8 @@ public:
   : m_subscriber(),
     m_frId(-1),
     m_lastFrIdUpdated(-1),
-    m_mostRecent()
+    m_mostRecent(),
+    m_heldRef()
   {}
 
   virtual ~RosSubscriber()
@@ -64,8 +70,16 @@ public:
     if (m_lastFrIdUpdated < m_frId)
     {
       // Copy data then release message.
-      RosLushSubscriberTraits::CopyMsgData(m_mostRecent, data);
-      m_mostRecent.reset();
+      const int res = RosLushSubscriberTraits::CopyMsgData(m_mostRecent, data);
+      if (DATA_COPY_RELEASE == res)
+      {
+        m_mostRecent.reset();
+      }
+      else
+      {
+        m_heldRef.reset();
+        m_heldRef.swap(m_mostRecent);
+      }
       m_lastFrIdUpdated = m_frId;
       return m_lastFrIdUpdated;
     }
@@ -80,6 +94,7 @@ private:
   int32_t m_frId;
   int32_t m_lastFrIdUpdated;
   typename msg_type::ConstPtr m_mostRecent;
+  typename msg_type::ConstPtr m_heldRef;
 };
 
 /// <summary> Generic ROS publisher logic. </summary>
@@ -208,3 +223,4 @@ private:
   boost::scoped_ptr<ros::NodeHandle> m_nodeHandle;
 };
 
+#endif // _LUSH_ROSLUSH_H_

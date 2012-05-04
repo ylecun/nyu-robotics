@@ -1,3 +1,5 @@
+#ifndef _LUSH_TURTLEBOT_H_
+#define _LUSH_TURTLEBOT_H_
 #include "ros/roslush.h"
 #include "sensor_msgs/Image.h"
 #include "geometry_msgs/Twist.h"
@@ -7,24 +9,41 @@
 #include "sensor_msgs/Imu.h"
 #include <cstring>
 
-/// <summary> OpenNI camera depth raw subscriber. </summary>
-struct RosLushCameraDepthImageRaw
+struct RosLushImageSubscriber
 {
   enum { queue_size = 1, };
   typedef sensor_msgs::Image msg_type;
-  typedef int_least16_t lush_convert_type;
+  typedef idx lush_convert_type;
+  inline static int CopyMsgData(const msg_type::ConstPtr& msg,
+                                lush_convert_type* data)
+  {
+    const size_t dim3 = msg->step / msg->width;
+    Midx_setdim3(data, msg->height, msg->width, dim3);
+    Midx_update_mod_from_dim(data);
+    data->srg->data = const_cast<unsigned char *>(&msg->data[0]);
+    return DATA_COPY_HOLD_REF;
+  }
+};
+
+/// <summary> OpenNI camera depth raw subscriber. </summary>
+struct RosLushCameraDepthImageRaw : public RosLushImageSubscriber
+{
   inline static const char* TopicStr()
   {
     return "camera/depth/image_raw";
   }
-  inline static void CopyMsgData(const msg_type::ConstPtr& msg,
-                                 lush_convert_type* data)
-  {
-    const int32_t dataSize = static_cast<int32_t>(msg->data.size());
-    memcpy(data, &msg->data[0], dataSize);
-  }
 };
 typedef RosSubscriber<RosLushCameraDepthImageRaw> CameraDepthImageRawSubscriber;
+
+/// <summary> OpenNI camera rgb color subscriber. </summary>
+struct RosLushCameraRgbImageColor : public RosLushImageSubscriber
+{
+  inline static const char* TopicStr()
+  {
+    return "camera/rgb/image_color";
+  }
+};
+typedef RosSubscriber<RosLushCameraRgbImageColor> CameraRgbImageColorSubscriber;
 
 template <typename Vector3>
 inline void CopyVector3(const Vector3& src, double* dst)
@@ -58,8 +77,8 @@ struct RosLushOdom
   {
     return "/odom";
   }
-  inline static void CopyMsgData(const msg_type::ConstPtr& msg,
-                                 lush_convert_type* data)
+  inline static int CopyMsgData(const msg_type::ConstPtr& msg,
+                                lush_convert_type* data)
   {
     CopyVector3(msg->twist.twist.linear, data->twist_linear);
     CopyVector3(msg->twist.twist.angular, data->twist_angular);
@@ -69,6 +88,7 @@ struct RosLushOdom
     CopyVector4(msg->pose.pose.orientation, data->pose_orientation);
     memcpy(data->pose_covariance, &msg->pose.covariance[0],
            msg->pose.covariance.size() * sizeof(msg->pose.covariance[0]));
+    return DATA_COPY_RELEASE;
   }
 };
 typedef RosSubscriber<RosLushOdom> OdomSubscriber;
@@ -90,13 +110,14 @@ struct RosLushRobotPoseEkf
   {
     return "/robot_pose_ekf/odom_combined";
   }
-  inline static void CopyMsgData(const msg_type::ConstPtr& msg,
-                                 lush_convert_type* data)
+  inline static int CopyMsgData(const msg_type::ConstPtr& msg,
+                                lush_convert_type* data)
   {
     CopyVector3(msg->pose.pose.position, data->pose_position);
     CopyVector4(msg->pose.pose.orientation, data->pose_orientation);
     memcpy(data->pose_covariance, &msg->pose.covariance[0],
            msg->pose.covariance.size() * sizeof(msg->pose.covariance[0]));
+    return DATA_COPY_RELEASE;
   }
 };
 typedef RosSubscriber<RosLushRobotPoseEkf> RobotPoseEkfSubscriber;
@@ -104,45 +125,22 @@ typedef RosSubscriber<RosLushRobotPoseEkf> RobotPoseEkfSubscriber;
 /// <summary> Point cloud subscriber. </summary>
 struct RosLushCameraDepthPoints
 {
-  struct CloudData
-  {
-    CloudData(float* data_, int* numPoints_)
-      : data(data_),
-        numPoints(numPoints_)
-    {}
-    float* data;
-    int* numPoints;
-  };
   enum { queue_size = 1, };
   typedef sensor_msgs::PointCloud2 msg_type;
-  typedef CloudData lush_convert_type;
+  typedef struct idx lush_convert_type;
   inline static const char* TopicStr()
   {
     return "camera/depth/points";
   }
-  inline static void CopyMsgData(const msg_type::ConstPtr& msg,
-                                 lush_convert_type* data)
+  inline static int CopyMsgData(const msg_type::ConstPtr& msg,
+                                lush_convert_type* data)
   {
-    enum { Float32XYZPointSize = sizeof(float) * 3, };
-    // Collect parameters.
-    uint8_t* dataDst = reinterpret_cast<uint8_t*>(data->data);
-    int& numPoints = *data->numPoints;
-    numPoints = 0;
-    // Copy all of the points (XYZ) to the data array.
-    const int pointStep = msg->point_step;
-    const int dataLength = msg->height * msg->row_step;
-    const uint8_t* dataSrc = &msg->data[0];
-    const uint8_t* const dataSrcEnd = dataSrc + dataLength;
-    for (; dataSrc < dataSrcEnd; dataSrc += pointStep)
-    {
-      // Ignore bad points.
-      if (!std::isnan(*reinterpret_cast<const float*>(dataSrc)))
-      {
-        memcpy(dataDst, dataSrc, Float32XYZPointSize);
-        dataDst += Float32XYZPointSize;
-        ++numPoints;
-      }
-    }
+    // Just point the idx to the data.
+    const size_t dim3 = msg->point_step / sizeof(float);
+    Midx_setdim3(data, msg->height, msg->width, dim3);
+    Midx_update_mod_from_dim(data);
+    data->srg->data = const_cast<unsigned char *>(&msg->data[0]);
+    return DATA_COPY_HOLD_REF;
   }
 };
 typedef RosSubscriber<RosLushCameraDepthPoints> CameraDepthPointsSubscriber;
@@ -166,8 +164,8 @@ struct RosLushCmdVel
   {
     return "/cmd_vel";
   }
-  inline static void CopyMsgData(const lush_convert_type& data,
-                                 msg_type* msg)
+  inline static int CopyMsgData(const lush_convert_type& data,
+                                msg_type* msg)
   {
     msg->linear.x = data.linear[0];
     msg->linear.y = data.linear[1];
@@ -175,6 +173,7 @@ struct RosLushCmdVel
     msg->angular.x = data.angular[0];
     msg->angular.y = data.angular[1];
     msg->angular.z = data.angular[2];
+    return DATA_COPY_RELEASE;
   }
 };
 typedef RosPublisher<RosLushCmdVel> CmdVelPublisher;
@@ -183,6 +182,7 @@ typedef RosPublisher<RosLushCmdVel> CmdVelPublisher;
 class RosStreams
   : // Subscribers.
     public CameraDepthImageRawSubscriber,
+    public CameraRgbImageColorSubscriber,
     public OdomSubscriber,
     public RobotPoseEkfSubscriber,
     public CameraDepthPointsSubscriber,
@@ -192,3 +192,4 @@ class RosStreams
 /// <summary> The ROS client for turtlebot. </summary>
 typedef RosClientBase<RosStreams> RosClient;
 
+#endif //_LUSH_TURTLEBOT_H_

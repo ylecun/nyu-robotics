@@ -22,11 +22,6 @@
 ;;          // Marshall data from ROS to Lush. Note the single parameter
 ;;          // of type lush_convert_type. To pass multiple pointers from
 ;;          // lush, define a helper structure.
-;;          static void CopyMsgData(const msg_type::ConstPtr& msg,
-;;                                  lush_convert_type* data);
-;;        };
-;;
-;;      For convenience, typedef your subscriber traits as in
 ;;        typedef RosSubscriber<SubscriberTraits> XXXSubscriber;
 ;;      Note that the established convention is to use the ROS topic name as
 ;;      the prefix for the subscriber type.
@@ -147,7 +142,8 @@
 #? (turtlebot-dummy)
 ;; Setup global includes for turtlebot.
 (de turtlebot-dummy ()
-  (cpheader "#include \"turtlebot/turtlebot.h\"")
+  (cpheader "#include \"ros/roslush.h\"")
+  (cheader "#include \"turtlebot/turtlebot.h\"")
   ())
 
 #? turtlebot
@@ -156,6 +152,7 @@
   ((-gptr- "RosClient*") client)
   ;; Depth image.
   ((-idx2- (-short-)) camera-depth-image-raw)
+  ((-idx3- (-ubyte-)) camera-rgb-image-color)
   ;; Odometry.
   ((-idx1- (-double-)) odom-pose-position)
   ((-idx1- (-double-)) odom-pose-orientation)
@@ -168,14 +165,15 @@
   ((-idx1- (-double-)) robot-pose-ekf-orientation)
   ((-idx1- (-double-)) robot-pose-ekf-covariance)
   ;; Depth points (XYZ).
-  ((-idx2- (-float-)) camera-depth-points)
-  )
+  ((-idx3- (-float-)) camera-depth-points))
 
 #? (new turtlebot)
 (defmethod turtlebot turtlebot ()
   (setq client (to-gptr #{ new RosClient() #}))
   ;; Depth image.
-  (setq camera-depth-image-raw (short-matrix 480 640))
+  (setq camera-depth-image-raw (short-matrix 1 1))
+  ;; Rgb image.
+  (setq camera-rgb-image-color (ubyte-matrix 1 1 1))
   ;; Odometry.
   (setq odom-pose-position (double-matrix 3))
   (setq odom-pose-orientation [d 0 0 0 1])
@@ -188,9 +186,8 @@
   (setq robot-pose-ekf-orientation [d 0 0 0 1])
   (setq robot-pose-ekf-covariance (double-matrix 36))
   ;; Depth points (XYZ).
-  (setq camera-depth-points (float-matrix (* 480 640) 3))
-  ()
-  )
+  (setq camera-depth-points (float-matrix-nc 1 1 1))
+  ())
 
 #? (delete <turtlebot>)
 (defmethod turtlebot -destructor ()
@@ -201,20 +198,22 @@
 #? (==> <turtlebot> start-sub-camera-depth-image-raw)
 ;; Start the camera depth image_raw subscriber.
 (defmethod turtlebot start-sub-camera-depth-image-raw ()
-  (to-int #{ $client->StartSubscriber<CameraDepthImageRawSubscriber>() #})
-  )
+  (to-int #{ $client->StartSubscriber<CameraDepthImageRawSubscriber>() #}))
 
 #? (==> <turtlebot> update-camera-depth-image-raw)
 ;; Update the camera depth image_raw subscriber.
 (defmethod turtlebot update-camera-depth-image-raw ()
-  (let ((result -1)) ((-int-) result)
-    #{typedef CameraDepthImageRawSubscriber::lush_convert_type DataType;
-      DataType* data = IDX_PTR($camera_depth_image_raw, int_least16_t);
-      $result = $client->Update<CameraDepthImageRawSubscriber>(data);
-      #}
-    result
-    )
-  )
+  (to-int #{ $client->Update<CameraDepthImageRawSubscriber>($camera_depth_image_raw) #} ))
+
+#? (==> <turtlebot> start-sub-camera-rgb-image-color)
+;; Start the camera depth image_rgb subscriber.
+(defmethod turtlebot start-sub-camera-rgb-image-color ()
+  (to-int #{ $client->StartSubscriber<CameraRgbImageColorSubscriber>() #}))
+
+#? (==> <turtlebot> update-camera-rgb-image-color)
+;; Update the camera depth image_rgb subscriber.
+(defmethod turtlebot update-camera-rgb-image-color ()
+  (to-int #{ $client->Update<CameraRgbImageColorSubscriber>($camera_rgb_image_color) #} ))
 
 #? (==> <turtlebot> start-sub-odom)
 ;; Start the odometry subscriber.
@@ -255,50 +254,33 @@
                     IDX_PTR($robot_pose_ekf_covariance, double));
       $result = $client->Update<RobotPoseEkfSubscriber>(&data);
       #}
-    result
-    )
-  )
+    result)) 
 
 #? (==> <turtlebot> start-sub-camera-depth-points)
 ;; Start the camera depth points subscriber.
 (defmethod turtlebot start-sub-camera-depth-points ()
-  (to-int #{ $client->StartSubscriber<CameraDepthPointsSubscriber>() #})
-  )
+  (to-int #{ $client->StartSubscriber<CameraDepthPointsSubscriber>() #}))
 
 #? (==> <turtlebot> update-camera-depth-points)
 ;; Update the camera depth points subscriber.
 (defmethod turtlebot update-camera-depth-points ()
-  (let ((result 0)(num-points 0))
-    ((-int-) result)
-    ((-int-) num-points)
-    ;; Fetch point data then resize the structure for this frame.
-    #{typedef CameraDepthPointsSubscriber::lush_convert_type DataType;
-      DataType data(IDX_PTR($camera_depth_points, float), &$num_points);
-      $result = $client->Update<CameraDepthPointsSubscriber>(&data);
-      #}
-    (idx-changedim camera-depth-points 0 num-points)
-    result
-    )
-  )
+  ;; Fetch point data then resize the structure for this frame.
+  (to-int #{ $client->Update<CameraDepthPointsSubscriber>($camera_depth_points) #} ))
 
 #? (==> <turtlebot> start-pub-cmd-vel)
 ;; Start the cmd_vel publisher.
 (defmethod turtlebot start-pub-cmd-vel ()
-  (to-int #{ $client->StartPublisher<CmdVelPublisher>() #})
-  )
+  (to-int #{ $client->StartPublisher<CmdVelPublisher>() #}))
 
 #? (==> <turtlebot> publish-cmd-vel <linear> <angular>)
 ;; Publish the cmd_vel Twist message. Uses linear and angular velocities.
 (defmethod turtlebot publish-cmd-vel (linear angular)
   ((-idx1- (-double-)) linear)
   ((-idx1- (-double-)) angular)
-  #{
-    $client->Publish<CmdVelPublisher>(
-      CmdVelPublisher::lush_convert_type(IDX_PTR($linear, double),
-                                         IDX_PTR($angular, double)));
-  #}
-  ()
-  )
+  #{ $client->Publish<CmdVelPublisher>(
+       CmdVelPublisher::lush_convert_type(IDX_PTR($linear, double),
+                                         IDX_PTR($angular, double))); #}
+  ())
 
 (dhc-make-with-c++
   ()
@@ -310,6 +292,9 @@
     ;; Depth image raw.
     start-sub-camera-depth-image-raw
     update-camera-depth-image-raw
+    ;; Rgb image..
+    start-sub-camera-rgb-image-color
+    update-camera-rgb-image-color
     ;; Odom.
     start-sub-odom
     update-odom
@@ -330,11 +315,17 @@
 (de turtlebot-test ()
   (let* ((tb (new turtlebot)))
     (==> tb start-sub-camera-depth-image-raw)
-    (new-window)
-    (for (i 0 100)
-      (==> tb update-camera-depth-image-raw)
-      (gray-draw-matrix 0 0 :tb:camera-depth-image-raw 0 1023 1 1)
-      )
-    )
-  )
+    (==> tb start-sub-camera-rgb-image-color)
+    (while (< (==> tb update-camera-depth-image-raw) 0))
+    (while (< (==> tb update-camera-rgb-image-color) 0))
+    (let ((h-depth (idx-dim :tb:camera-depth-image-raw 0))
+          (w-depth (idx-dim :tb:camera-depth-image-raw 1))
+          (h-rgb (idx-dim :tb:camera-rgb-image-color 0))
+          (w-rgb (idx-dim :tb:camera-rgb-image-color 1)))
+      (when (not window) (new-window (+ w-depth w-rgb) (max h-depth h-rgb)))
+      (for (i 0 100)
+        (while (< (==> tb update-camera-depth-image-raw) 0))
+        (while (< (==> tb update-camera-rgb-image-color) 0))
+        (gray-draw-matrix 0 0 :tb:camera-depth-image-raw 0 1023 1 1)
+        (rgb-draw-matrix w-depth 0 :tb:camera-rgb-image-color 1 1)))))
 
