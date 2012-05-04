@@ -10,8 +10,9 @@
 #? (prototype-cpp-dummy)
 ;; Load cpp includes.
 (de prototype-cpp-dummy ()
-  (cpheader "#include \"turtlebot/turtlebot.h\"")
-  (cpheader "#include <limits>")
+  (cpheader "#include \"ros/roslush.h\"")
+  (cheader "#include \"turtlebot/turtlebot.h\"")
+  (cheader "#include <limits>")
   ())
 
 (de double-inf ()
@@ -45,7 +46,7 @@
 ;; are integrated only into the local map. After this process, the local
 ;; map is essentially a ROI in the global map as they are aligned.
 (de xyz2global-feature-map (xyz tform-gbl tform-base fm-global fm-local)
-  ((-idx2- (-float-)) xyz)
+  ((-idx3- (-float-)) xyz)
   ((-idx2- (-float-)) tform-gbl)
   ((-idx2- (-float-)) tform-base)
   ((-obj- (feature-map)) fm-global)

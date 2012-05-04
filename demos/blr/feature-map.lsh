@@ -106,17 +106,17 @@
 ;;   [2] - Sum of squared heights.
 ;;   [3] - Sum of squared heights.
 (de xyz2feature-map (xyz transform fm)
-  ((-idx2- (-float-)) xyz)
+  ((-idx3- (-float-)) xyz)
   ((-idx2- (-float-)) transform)
   ((-obj- (feature-map)) fm)
+  (cpheader "#include <cmath>")
   (let* ((map-cell [i 0 0])               ;; Target cell for xyz point.
          (xyz-tform (float-matrix-nc 3))  ;; Transformed xyz point.
          (tform-rot (narrow (narrow transform 0 3 0) 1 3 0))
          (tform-trans (select (narrow transform 0 3 0) 1 3))
          (ht-bin-cm (/ @FEATURE_MAP_HT_BIN_CM 100.0))
          (ht-bin-base-idx @FEATURE_MAP_3_NUM_HT_BIN_0)
-         (ht-bin-max-offset (- @FEATURE_MAP_HT_BIN_COUNT 1))
-         )
+         (ht-bin-max-offset (- @FEATURE_MAP_HT_BIN_COUNT 1)))
     ((-float-) ht-bin-cm)
     ((-int-) ht-bin-base-idx)
     ((-int-) ht-bin-max-offset)
@@ -126,37 +126,34 @@
     (setq :fm:pcl-density (/ (idx-dim xyz 0) (* 640 480)))
     ;;(printf ":fm:pcl-density %f\n" :fm:pcl-density)
     ;; For all point cloud points.
-    (idx-bloop ((xyz xyz))
-      ;; Transform to robot world.
-      (idx-m2dotm1 tform-rot xyz xyz-tform)
-      (idx-add xyz-tform tform-trans xyz-tform)
-      ;; Find target cell.
-      (==> fm world2map-cell xyz-tform map-cell)
-      ;; Check cell in bounds.
-      (if (==> fm in-bounds map-cell)
-        (let* ((h (* -1 (xyz-tform 2)))
-               (ht-bin-offset (to-int (+ (min (max (/ h ht-bin-cm) 0) ht-bin-max-offset) 0.5)))
-               (ht-bin-idx (+ ht-bin-base-idx ht-bin-offset))
-               (fm-pt (select (select :fm:data 0 (map-cell 0)) 0 (map-cell 1)))
-               )
-          ((-int-) ht-bin-offset)
-          ((-int-) ht-bin-idx)
-          ;; Increment count.
-          (fm-pt 0 (+ (fm-pt 0) 1))
-          ;; Sum height.
-          (fm-pt 1 (+ (fm-pt 1) h))
-          ;; Sum square height.
-          (fm-pt 2 (+ (fm-pt 2) (* h h)))
-          ;; Increment bin for this point.
-          (fm-pt ht-bin-idx (+ (fm-pt ht-bin-idx) 1))
-;;          (printf "h = %f, ht-bin-offset = %d, ht-bin-idx = %d\n" h ht-bin-offset ht-bin-idx)
-          )
-        ()
-        )
-      )
-    )
-  fm
-  )
+    (idx-bloop ((xyz (narrow xyz 2 3 0))) (idx-bloop ((xyz xyz))
+      ;; Check not nan-tastic.
+      (when (= 0 (to-int #{ std::isnan(*IDX_PTR($xyz, float)) #} ))
+        ;; Transform to robot world.
+        (idx-m2dotm1 tform-rot xyz xyz-tform)
+        (idx-add xyz-tform tform-trans xyz-tform)
+        ;; Find target cell.
+        (==> fm world2map-cell xyz-tform map-cell)
+        ;; Check cell in bounds.
+        (if (==> fm in-bounds map-cell)
+          (let* ((h (* -1 (xyz-tform 2)))
+                 (ht-bin-offset (to-int (+ (min (max (/ h ht-bin-cm) 0) ht-bin-max-offset) 0.5)))
+                 (ht-bin-idx (+ ht-bin-base-idx ht-bin-offset))
+                 (fm-pt (select (select :fm:data 0 (map-cell 0)) 0 (map-cell 1))))
+            ((-int-) ht-bin-offset)
+            ((-int-) ht-bin-idx)
+            ;; Increment count.
+            (fm-pt 0 (+ (fm-pt 0) 1))
+            ;; Sum height.
+            (fm-pt 1 (+ (fm-pt 1) h))
+            ;; Sum square height.
+            (fm-pt 2 (+ (fm-pt 2) (* h h)))
+            ;; Increment bin for this point.
+            (fm-pt ht-bin-idx (+ (fm-pt ht-bin-idx) 1))
+  ;;          (printf "h = %f, ht-bin-offset = %d, ht-bin-idx = %d\n" h ht-bin-offset ht-bin-idx)
+            )
+        ())))))
+  fm)
 
 #? (feature-map2cost-map <fm-data> <cm-data>)
 ;; Compute the cost-map for the given feature map.
