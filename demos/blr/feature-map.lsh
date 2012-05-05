@@ -2,6 +2,7 @@
 (libload "libc/constants")
 (libload "libnum/linalgebra")
 (libload "idx-double")
+(libload "idx-float")
 
 #? feature-map
 ;; A generic structure used to store feature vectors. Has center and
@@ -13,8 +14,7 @@
   ((-idx1- (-int-)) full-dim)
   ((-idx1- (-int-)) half-dim)
   ((-float-) pcl-density)
-  ((-int-) features)
-  )
+  ((-int-) features))
 
 #? (new feature-map <half-dim> <scale> <features>)
 ;; Create a feature map with the given dimensions and scale. For each of the
@@ -30,8 +30,7 @@
   (setq center (idx-mul half-dim [i 2 1]))
   (setq full-dim (idx-add (idx-mul half-dim [i 2 2]) [i 1 1]))
   (setq data (float-matrix (full-dim 0) (full-dim 1) features))
-  (setq pcl-density 0)
-  )
+  (setq pcl-density 0))
 
 #? (==> <feature-map> world2map-cell <world-coord> <cell>)
 ;; Compute the map cell for the given world coordinate. The origin is always
@@ -42,10 +41,8 @@
   (let ((x-offset (/ (world-coord 1) (scale 1)))
         (y-offset (/ (world-coord 0) (scale 0))))
     (cell 0 (- (center 0) y-offset))
-    (cell 1 (+ (center 1) x-offset))
-    )
-  cell
-  )
+    (cell 1 (+ (center 1) x-offset)))
+  cell)
 
 #? (==> <feature-map> map-cell2world <cell> <world-coord>)
 ;; Convert a cell coordinate to world coordinates.
@@ -54,18 +51,15 @@
   ((-idx1- (-float-)) world-coord)
   (let ((cell-offset (idx-sub cell center)))
     (world-coord 0 (* (scale 0) (- (cell-offset 0))))
-    (world-coord 1 (* (scale 1) (cell-offset 1)))
-    )
-  world-coord
-  )
+    (world-coord 1 (* (scale 1) (cell-offset 1))))
+  world-coord)
 
 #? (==> <feature-map> in-bounds <cell>)
 ;; Test if cell is within the map area.
 (defmethod feature-map in-bounds (cell)
   ((-idx1- (-int-)) cell)
   (and (and (>= (cell 0) 0) (>= (cell 1) 0))
-       (and (< (cell 0) (full-dim 0)) (< (cell 1) (full-dim 1))))
-  )
+       (and (< (cell 0) (full-dim 0)) (< (cell 1) (full-dim 1)))))
 
 ;; Cost map infinite cost marked where there are no observations.
 (defconstant "COST_MAP_INF_COST" 9999)
@@ -82,8 +76,80 @@
   (==> this feature-map :fm:half-dim :fm:scale 1)
   (setq center :fm:center)
   (setq pcl-density :fm:pcl-density)
-  this
-  )
+  this)
+
+(de median-rgb (rgb iter m)
+  ;; let m = mu
+  ;; for N iterations:
+  ;;   d_i = dist(rgb_i - mu)
+  ;;   w_i = 1. / max(d_i, 1.0e-10)
+  ;;   w_i = w_i / sum(w)
+  ;;   m = dot(w, rgb)
+  ((-idx2- (-ubyte-)) rgb)
+  ((-int-) iter)
+  ((-idx1- (-float-)) m)
+  (let ((rgb-dim-0-inv (/ 1.0 (idx-dim rgb 0)))
+        (d (float-matrix-nc (idx-dim rgb 0)))
+        (w (float-matrix-nc (idx-dim rgb 0)))
+        (w-sum 0))
+    ((-float-) rgb-dim-0-inv)
+    ((-float-) w-sum)
+    (idx-clear m)
+    (cidx-bloop ("c" ("rgb_c" (transpose rgb))("m" m))
+      #{ for (int r = 0; r < $rgb->dim[0]; ++r)
+         { *m += static_cast<float>(rgb_c[r]) * $rgb_dim_0_inv; } #})
+    #{ float* const m = IDX_PTR($m, float); #}
+    (for (i 1 iter)
+      ((-int-) i)
+      (setq w-sum 0)
+      (cidx-bloop ("r" ("rgb_r" rgb)("d" d)("w" w))
+        (cpheader "#include <cmath>")
+        #{ { const float dr = m[0] - rgb_r[0];
+             const float dg = m[1] - rgb_r[1];
+             const float db = m[2] - rgb_r[2];
+             *d = sqrt((dr * dr) + (dg * dg) + (db * db));
+             *w = 1.0f / std::max(*d, 1.0e-10f);
+             $w_sum += *w; } #})
+;;      (cidx-bloop ("r" ("rgb_r" rgb)("d" d)("w" w))
+;;        #{ printf("d[%d] = %f, w[%d] = %f\n", r, *d, r, *w); #} )
+;;      (printf "iter %d energy = %f\n" i ((idx-sum d)))
+      (idx-f1dotc w (/ 1.0 w-sum) w)
+      (idx-clear m)
+      (cidx-bloop ("r" ("rgb_r" rgb)("w" w))
+        #{ for (int c = 0; c < $rgb->dim[1]; ++c)
+           { m[c] += static_cast<float>(rgb_r[c]) * *w; } #}))
+    m))
+
+(de median-rgb-test (iter)
+  ;; Generate random rgbs with outliers
+  (let ((rgb (ubyte-matrix-nc 30 3))
+        (m (float-matrix 3))
+        (r-base (rand 0 245))
+        (g-base (rand 0 245))
+        (b-base (rand 0 245)))
+    (idx-bloop ((r (select (narrow rgb 0 15 0) 1 0))) (r (rand r-base (+ r-base 10))))
+    (idx-bloop ((g (select (narrow rgb 0 15 0) 1 1))) (g (rand g-base (+ g-base 10))))
+    (idx-bloop ((b (select (narrow rgb 0 15 0) 1 2))) (b (rand b-base (+ b-base 10))))
+    (idx-bloop ((rgb (narrow rgb 0 15 15))) (idx-bloop ((rgb rgb)) (rgb (rand 0 255))))
+    (pretty rgb)
+    ;; Show raw points.
+    (if (not window) (new-window 0 0 (* 255 3) 255))
+    (cls)
+    ;; rg gb rb
+    (idx-bloop ((rgb rgb))
+      (let* ((r (rgb 0))(g (rgb 1))(b (rgb 2))
+             (r-norm (/ r 255.0))(g-norm (/ g 255.0))(b-norm (/ b 255.0)))
+        (color-rgb r-norm g-norm 0)(fill-circle r g 1)
+        (color-rgb 0 g-norm b-norm)(fill-circle (+ 255 g) b 1)
+        (color-rgb r-norm 0 b-norm)(fill-circle (+ (* 2 255) r) b 1)))
+    ;; Do iterations.
+    (for (i 0 iter)
+      (median-rgb rgb i m)
+      (let* ((r (m 0))(g (m 1))(b (m 2)))
+        (color-rgb 0 0 1)(fill-circle r g 2)
+        (color-rgb 1 0 0)(fill-circle (+ 255 g) b 2)
+        (color-rgb 0 1 0)(fill-circle (+ (* 2 255) r) b 2))
+      (pretty m))))
 
 ;; Height mean and variance features.
 (defconstant "FEATURE_MAP_NUM_PTS"        0)
@@ -272,21 +338,14 @@
           ;; Var = ((Sum(X_i^2) - (2 * Mu * Sum(X_i))) / N) + Mu^2
           (let* ((mu (/ sum_x num))
                  (var (+ (/ (- sum_xx (* 2 (* mu sum_x))) num) (* mu mu))))
-              (cost 0 (+ (abs mu) var))
-            )
-          )
-        )
-      )
-    )
-  ()
-  )
+              (cost 0 (+ (abs mu) var)))))))
+  ())
 
 #? (atan2 <y> <x>)
 ;; Compute arc tangent with two parameters.
 (de atan2 (y x) ((-double-) y) ((-double-) x)
   (cpheader "#include <cmath>")
-  (to-double #{ atan2($y, $x) #})
-  )
+  (to-double #{ atan2($y, $x) #}))
 
 #? (cost-map2rgb <max-cost> <cm> <cm-rgb>)
 ;; Convert the cost-map into a display image.
@@ -299,15 +358,10 @@
       (if (not (= @COST_MAP_INF_COST (cost 0)))
         ;; Shade of gray based on cost in range [0, max-cost].
         (let* ((color (min 255 (max 0 (* (/ (cost 0) max-cost) 255)))))
-          (idx-bloop ((rgb cost-rgb)) (rgb color))
-          )
+          (idx-bloop ((rgb cost-rgb)) (rgb color)))
         ;; Else blue.
-        (idx-copy [i 0 0 255] cost-rgb)
-        )
-      )
-    )
-  cm-rgb
-  )
+        (idx-copy [i 0 0 255] cost-rgb))))
+  cm-rgb)
 
 #? (draw-correspondences <pts-global> <pts-local> <center> <scale>)
 ;; Display point correspondences.
@@ -328,10 +382,8 @@
     (draw-line (+ (center 0) (* (   pt-global 0)  scale))
                (+ (center 1) (* (- (pt-global 1)) scale))
                (+ (center 0) (* (   pt-local 0)  scale))
-               (+ (center 1) (* (- (pt-local 1)) scale)))
-    )
-  ()
-  )
+               (+ (center 1) (* (- (pt-local 1)) scale))))
+  ())
 
 #? (map-registration <pts-global> <pts-local> <rot-mat> <offset>)
 ;; Takes two sets of point correspondences and computes a rigid transformation
@@ -344,8 +396,7 @@
   ((-idx1- (-double-)) offset)
   (let ((obs-mat (double-matrix (* 2 (idx-dim pts-global 0)) 4))
         (b-mat   (double-matrix (* 2 (idx-dim pts-global 0))))
-        (x       (double-matrix-nc 4))
-        )
+        (x       (double-matrix-nc 4)))
     ((-idx1- (-double-)) x)
     ;; Setup obs-mat from points.
     (idx-bloop ((obs-x-r (narrow obs-mat 0 (idx-dim pts-global 0) 0))
@@ -353,13 +404,11 @@
                 (b-x-r (narrow b-mat 0 (idx-dim pts-global 0) 0))
                 (b-y-r (narrow b-mat 0 (idx-dim pts-global 0) (idx-dim pts-global 0)))
                 (pt-global pts-global)
-                (pt-local pts-local)
-                )
+                (pt-local pts-local))
         (obs-x-r 0 (pt-local 0)) (obs-x-r 1 (- (pt-local 1))) (obs-x-r 2 1) (obs-x-r 3 0)
         (obs-y-r 0 (pt-local 1)) (obs-y-r 1    (pt-local 0))  (obs-y-r 2 0) (obs-y-r 3 1)
         (b-x-r (pt-global 0))
-        (b-y-r (pt-global 1))
-      )
+        (b-y-r (pt-global 1)))
 ;;    (pretty obs-mat)
 ;;    (pretty b-mat)
     ;; Solve using SVD.
@@ -368,18 +417,14 @@
     ;; Set return values.
     (let ((rot-params (narrow x 0 2 0))
           (offset-params (narrow x 0 2 2))
-          (rot-norm-sq [d@ 0])
-          )
+          (rot-norm-sq [d@ 0]))
       ;; Normalize rotation part and set offset part.
       (idx-m1dotm1 rot-params rot-params rot-norm-sq)
       (idx-d1dotc rot-params (/ 1.0 (sqrt (rot-norm-sq))) rot-params)
       (rot-mat 0 0 (rot-params 0)) (rot-mat 0 1 (- (rot-params 1)))
       (rot-mat 1 0 (rot-params 1)) (rot-mat 1 1    (rot-params 0))
-      (idx-copy offset-params offset)
-      )
-    )
-  ()
-  )
+      (idx-copy offset-params offset)))
+  ())
 
 ;; Test cost map registration.
 (de map-registration-test ()
@@ -395,8 +440,7 @@
          (theta 0)
          (window-size [i 640 480])
          (window-center (int-matrix 2))
-         (draw-scale 5)
-         )
+         (draw-scale 5))
     (window-center 0 (* 0.5 (window-size 0)))
     (window-center 1 (* 0.5 (window-size 1)))
     (seed (time))
@@ -410,22 +454,17 @@
     ;; Create correspondences.
     (idx-bloop ((pt-global pts-global) (pt-local pts-local))
       (let ((x (to-int (rand -20 20)))
-            (y (to-int (rand -20 20)))
-            )
+            (y (to-int (rand -20 20))))
         (pt-global 0 x) (pt-global 1 y)
         (let ((offset-prime (float-matrix-nc 2))
-              (theta-prime (* theta (rand 0.8 1.2)))
-              )
+              (theta-prime (* theta (rand 0.8 1.2))))
           ;; Create purturbed offset.
           (offset-prime 0 (+ (offset 0) (rand -0.5 0.5)))
           (offset-prime 1 (+ (offset 1) (rand -0.5 0.5)))
           ;;(idx-copy offset offset-prime)
           ;; Compute transformed point.
           (pt-local 0 (+ (- (* (cos theta-prime) x) (* (sin theta-prime) y)) (offset-prime 0)))
-          (pt-local 1 (+ (+ (* (sin theta-prime) x) (* (cos theta-prime) y)) (offset-prime 1)))
-          )
-        )
-      )
+          (pt-local 1 (+ (+ (* (sin theta-prime) x) (* (cos theta-prime) y)) (offset-prime 1))))))
 
     ;; Draw the points.
     (if (= () window) (new-window (window-size 0) (window-size 1)))
@@ -443,27 +482,21 @@
         (idx-add local-tform offset-compute local-tform)
         ;; Draw local-tform.
         (fill-circle (+ (window-center 0) (* (   local-tform 0)  draw-scale))
-                     (+ (window-center 1) (* (- (local-tform 1)) draw-scale)) 2)
-        )
-      )
-    )
-  ()
-  )
+                     (+ (window-center 1) (* (- (local-tform 1)) draw-scale)) 2))))
+  ())
 
 (dhc-make-with-c++ () ()
   (feature-map
     feature-map
     world2map-cell
     map-cell2world
-    in-bounds
-    )
+    in-bounds)
   (cost-map
-    cost-map
-    )
+    cost-map)
+  median-rgb
   xyzrgb2feature-map
   feature-map2cost-map
   cost-map2rgb
   atan2
-  map-registration
-  )
+  map-registration)
 
