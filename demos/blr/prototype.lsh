@@ -16,11 +16,10 @@
   ())
 
 (de double-inf ()
-  (to-double #{ std::numeric_limits<double>::infinity() #})
-  )
+  (to-double #{ std::numeric_limits<double>::infinity() #}))
+
 (de float-inf ()
-  (to-float #{ std::numeric_limits<float>::infinity() #})
-  )
+  (to-float #{ std::numeric_limits<float>::infinity() #}))
 
 #? (quaternion2matrix <q> <m>)
 ;; Convert a quaternion to a 3x3 rotation matrix.
@@ -36,17 +35,16 @@
     (m 1 0 (* 2 (+ (* (q 0) (q 1)) (* (q 3) (q 2)))))
     (m 1 2 (* 2 (- (* (q 1) (q 2)) (* (q 3) (q 0)))))
     (m 2 0 (* 2 (- (* (q 0) (q 2)) (* (q 3) (q 1)))))
-    (m 2 1 (* 2 (+ (* (q 3) (q 0)) (* (q 1) (q 2)))))
-    )
-  m
-  )
+    (m 2 1 (* 2 (+ (* (q 3) (q 0)) (* (q 1) (q 2))))))
+  m)
 
-#? (xyz2global-feature-map <xyz> <tform-gbl> <tform-base> <fm-global> <fm-local>)
+#? (xyz2global-feature-map <xyz> <rgb> <tform-gbl> <tform-base> <fm-global> <fm-local>)
 ;; Uses the global map to orient the local map in global space. Points
 ;; are integrated only into the local map. After this process, the local
 ;; map is essentially a ROI in the global map as they are aligned.
-(de xyz2global-feature-map (xyz tform-gbl tform-base fm-global fm-local)
+(de xyz2global-feature-map (xyz rgb tform-gbl tform-base fm-global fm-local)
   ((-idx3- (-float-)) xyz)
+  ((-idx3- (-ubyte-)) rgb)
   ((-idx2- (-float-)) tform-gbl)
   ((-idx2- (-float-)) tform-base)
   ((-obj- (feature-map)) fm-global)
@@ -61,9 +59,7 @@
          (tform-lcl (float-matrix-nc 4 4))        ;; Robot local transform.
          (tform-full (float-matrix-nc 4 4))       ;; Robot local transform and base transform.
          (map-cell (int-matrix-nc 2))             ;; Target cell for xyz point.
-         (xyz-tform (float-matrix-nc 3))          ;; Transformed xyz point.
-         )
-    
+         (xyz-tform (float-matrix-nc 3)))         ;; Transformed xyz point.
     ;; Compute map cell for robot position in global map.
     (==> fm-global world2map-cell (narrow (select tform-gbl 1 3) 0 3 0) global-cell)
     ;; Get pixel center for global-cell in world coordinates.
@@ -72,13 +68,10 @@
     ;; Compute local transform for the robot subtracting the global map offset.
     (idx-copy tform-gbl tform-lcl)
     (let ((tform-lcl-trans (narrow (select tform-lcl 1 3) 0 3 0)))
-      (idx-sub tform-lcl-trans global-cell-world tform-lcl-trans)
-      )
+      (idx-sub tform-lcl-trans global-cell-world tform-lcl-trans))
     ;; Apply camera to base link transform and compute map.
     (idx-m2timesm2 tform-lcl tform-base tform-full)
-    (xyz2feature-map xyz tform-full fm-local)
-    )
-  )
+    (xyzrgb2feature-map xyz rgb tform-full fm-local)))
 
 ;; Time to live for a feature observation.
 (defconstant "COST_MAP_GLOBAL_TTL_SECONDS" 120)
@@ -92,8 +85,7 @@
   ((-float-) ttl-seconds)
   ((-float-) time-now)
   (let ((time-cutoff (- time-now ttl-seconds))
-        (blue [i 0 0 255])
-        )
+        (blue [i 0 0 255]))
     (idx-pbloop ((fm-r :fm-global:data)(cm-r :cm-global:data)(cm-rgb-r cm-global-rgb))
       (idx-bloop ((fm fm-r)(cm cm-r)(cm-rgb cm-rgb-r))
         ;; Reset point when last-seen time is too old.
@@ -104,13 +96,7 @@
             ;;(fm @FEATURE_MAP_IDX_COUNT 9999999999.1)
             (fm @FEATURE_MAP_IDX_COUNT (float-inf))
             (cm 0 @COST_MAP_INF_COST)
-            (idx-copy blue cm-rgb)
-            )
-          )
-        )
-      )
-    )
-  )
+            (idx-copy blue cm-rgb)))))))
 
 ;; Exponential moving average weight used to blend new observations into the
 ;; global feature map.
@@ -332,17 +318,17 @@
                    (fm-gbl-feat fm-gbl-feat-r)
                    (fm-lcl-feat fm-lcl-feat-r))
         ;; Mask only when there are no points.
-        (fm-gbl-mask (if (> (fm-gbl @FEATURE_MAP_0_NUM_PTS) 0) 1 0))
-        (fm-lcl-mask (if (> (fm-lcl @FEATURE_MAP_0_NUM_PTS) 0) 1 0))
+        (fm-gbl-mask (if (> (fm-gbl @FEATURE_MAP_NUM_PTS) 0) 1 0))
+        (fm-lcl-mask (if (> (fm-lcl @FEATURE_MAP_NUM_PTS) 0) 1 0))
         ;; Compute mean, variance, histogram.
-        (let ((gbl-num (fm-gbl @FEATURE_MAP_0_NUM_PTS))
-              (lcl-num (fm-lcl @FEATURE_MAP_0_NUM_PTS))
-              (gbl-sum-x (fm-gbl @FEATURE_MAP_1_SUM_HT))
-              (lcl-sum-x (fm-lcl @FEATURE_MAP_1_SUM_HT))
-              (gbl-sum-xx (fm-gbl @FEATURE_MAP_2_SUM_HT_SQ))
-              (lcl-sum-xx (fm-lcl @FEATURE_MAP_2_SUM_HT_SQ))
-              (hist-gbl-denorm (narrow fm-gbl 0 @FEATURE_MAP_HT_BIN_COUNT @FEATURE_MAP_3_NUM_HT_BIN_0))
-              (hist-lcl-denorm (narrow fm-lcl 0 @FEATURE_MAP_HT_BIN_COUNT @FEATURE_MAP_3_NUM_HT_BIN_0))
+        (let ((gbl-num (fm-gbl @FEATURE_MAP_NUM_PTS))
+              (lcl-num (fm-lcl @FEATURE_MAP_NUM_PTS))
+              (gbl-sum-x (fm-gbl @FEATURE_MAP_SUM_HT))
+              (lcl-sum-x (fm-lcl @FEATURE_MAP_SUM_HT))
+              (gbl-sum-xx (fm-gbl @FEATURE_MAP_SUM_HT_SQ))
+              (lcl-sum-xx (fm-lcl @FEATURE_MAP_SUM_HT_SQ))
+              (hist-gbl-denorm (narrow fm-gbl 0 @FEATURE_MAP_HT_BIN_COUNT @FEATURE_MAP_NUM_HT_BIN_0))
+              (hist-lcl-denorm (narrow fm-lcl 0 @FEATURE_MAP_HT_BIN_COUNT @FEATURE_MAP_NUM_HT_BIN_0))
               (hist-gbl-norm (narrow fm-gbl-feat 0 @FEATURE_MAP_HT_BIN_COUNT 2))
               (hist-lcl-norm (narrow fm-lcl-feat 0 @FEATURE_MAP_HT_BIN_COUNT 2))
               )
@@ -594,6 +580,7 @@
 
 (de xyz2global-feature-map-test (tb n)
   (==> tb start-sub-camera-depth-points)
+  (==> tb start-sub-camera-rgb-image-color)
 ;;  (==> tb start-sub-robot-pose-ekf)
 ;;  (==> tb start-sub-odom)
   ;; Create feature, cost, and cost rgb maps.
@@ -606,8 +593,7 @@
          (cm-local-rgb ())
          (fm-global-cell (int-matrix-nc 2))
          (tmr (new stopwatch))
-         (tform-odom-correct (float-matrix 4 4))
-         )
+         (tform-odom-correct (float-matrix 4 4)))
     (for (i 0 3) (tform-odom-correct i i 1))
     (idx-f2fill (select :fm-global:data 2 @FEATURE_MAP_IDX_COUNT) (- (infinity)))
     ;; Setup cost maps.
@@ -622,22 +608,20 @@
       let ((wnd-width 0)(wnd-height 0))
         (setq wnd-width (+ (idx-dim cm-global-rgb 1) (idx-dim cm-local-rgb 1)))
         (setq wnd-height (idx-dim cm-global-rgb 0))
-        (new-window 0 0 wnd-width wnd-height)
-        )
-      )
+        (new-window 0 0 wnd-width wnd-height)))
     ;; Do n loops of processing.
     (for (i 0 (- n 1))
       ;; Grab new data.
 ;;      (while (< (==> tb update-robot-pose-ekf) 0) ())
 ;;      (while (< (==> tb update-odom) 0) ())
       (while (< (==> tb update-camera-depth-points) 0) ())
+      (while (< (==> tb update-camera-rgb-image-color) 0) ())
       ;; Convert points to feature map.
       (let ((tform-odom (float-matrix 4 4))
             (odom-orien (float-matrix 4))
             (odom-pos (float-matrix 3))
             (tform-odom-corrected (float-matrix 4 4))
-            (tform-full (float-matrix 4 4))
-            )
+            (tform-full (float-matrix 4 4)))
         ;; Update transform using odometry.
 ;;        (idx-copy :tb:odom-pose-position odom-pos)
 ;;        (idx-copy :tb:odom-pose-orientation odom-orien)
@@ -659,14 +643,13 @@
         ;; Get robot world position in map coordinates.
         (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
         ;; Compute local map using current odometry guess.
-        (xyz2global-feature-map :tb:camera-depth-points
+        (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
                                 tform-odom-corrected turtlebot-c2v fm-global fm-local)
         ;; Register feature maps using visual odometry.
         (let* ((tform-odom-correct-upd (float-matrix 4 4))
                (tform-odom-correct-upd-rot (narrow (narrow tform-odom-correct-upd 0 2 0) 1 2 0))
                (tform-odom-correct-upd-trans (select (narrow tform-odom-correct-upd 0 3 0) 1 3))
-               (num-matched 0)
-               )
+               (num-matched 0))
           (for (i 0 3) (tform-odom-correct-upd i i 1))
           (setq num-matched (fm-local-registration fm-local fm-global fm-global-cell
                                                    tform-odom-correct-upd-rot
@@ -676,19 +659,15 @@
             ;; Update odometry correction transformation by adding the current one.
             (progn
               (idx-copy tform-odom-correct tform-odom-corrected)
-              (idx-m2timesm2 tform-odom-correct-upd tform-odom-corrected tform-odom-correct)
-              )
+              (idx-m2timesm2 tform-odom-correct-upd tform-odom-corrected tform-odom-correct))
             ;; Correct the odometry using the new correction factor.
             (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
 ;;            (printf "tform-odom-corrected\n") (pretty tform-odom-corrected)
             ;; Get robot world position in map coordinates.
             (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
             ;; Compute local map using current odometry guess.
-            (xyz2global-feature-map :tb:camera-depth-points
-                                    tform-odom-corrected turtlebot-c2v fm-global fm-local)
-            )
-          )
-        )
+            (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
+                                    tform-odom-corrected turtlebot-c2v fm-global fm-local))))
       (progn (feature-map2cost-map :fm-local:data :cm-local:data)
              (setq :cm-local:pcl-density :fm-local:pcl-density))
       ;; Update global map (with cost map rgb optimizations).
@@ -698,10 +677,7 @@
       (cost-map2rgb 0.5 cm-local cm-local-rgb)
       ;; Draw maps.
       (rgb-draw-matrix 0 0 cm-global-rgb 1 1)
-      (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1)
-      )
-    )
-  )
+      (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1))))
 
 ;;(let ((dhc-make-lushflags (concat dhc-make-lushflags " -fopenmp")))
   (dhc-make-with-c++ () () ;;"/usr/lib/gcc/i486-linux-gnu/4.4/libgomp.so"
