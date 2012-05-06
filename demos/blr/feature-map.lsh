@@ -88,16 +88,10 @@
   ((-idx2- (-ubyte-)) rgb)
   ((-int-) iter)
   ((-idx1- (-float-)) m)
-  (let ((rgb-dim-0-inv (/ 1.0 (idx-dim rgb 0)))
-        (d (float-matrix-nc (idx-dim rgb 0)))
+  (let ((d (float-matrix-nc (idx-dim rgb 0)))
         (w (float-matrix-nc (idx-dim rgb 0)))
         (w-sum 0))
-    ((-float-) rgb-dim-0-inv)
     ((-float-) w-sum)
-    (idx-clear m)
-    (cidx-bloop ("c" ("rgb_c" (transpose rgb))("m" m))
-      #{ for (int r = 0; r < $rgb->dim[0]; ++r)
-         { *m += static_cast<float>(rgb_c[r]) * $rgb_dim_0_inv; } #})
     #{ float* const m = IDX_PTR($m, float); #}
     (for (i 1 iter)
       ((-int-) i)
@@ -117,20 +111,23 @@
       (idx-clear m)
       (cidx-bloop ("r" ("rgb_r" rgb)("w" w))
         #{ for (int c = 0; c < $rgb->dim[1]; ++c)
-           { m[c] += static_cast<float>(rgb_r[c]) * *w; } #}))
-    m))
+           { m[c] += static_cast<float>(rgb_r[c]) * *w; } #})))
+  m)
 
-(de median-rgb-test (iter)
+(de median-rgb-test (iter num-samples)
   ;; Generate random rgbs with outliers
-  (let ((rgb (ubyte-matrix-nc 30 3))
+  (let ((rgb (ubyte-matrix-nc num-samples 3))
         (m (float-matrix 3))
         (r-base (rand 0 245))
         (g-base (rand 0 245))
-        (b-base (rand 0 245)))
-    (idx-bloop ((r (select (narrow rgb 0 15 0) 1 0))) (r (rand r-base (+ r-base 10))))
-    (idx-bloop ((g (select (narrow rgb 0 15 0) 1 1))) (g (rand g-base (+ g-base 10))))
-    (idx-bloop ((b (select (narrow rgb 0 15 0) 1 2))) (b (rand b-base (+ b-base 10))))
-    (idx-bloop ((rgb (narrow rgb 0 15 15))) (idx-bloop ((rgb rgb)) (rgb (rand 0 255))))
+        (b-base (rand 0 245))
+        (rgb-dim-0-inv (/ 1.0 num-samples))
+        (num-inliers (to-int (* 0.55 num-samples))))
+    (idx-bloop ((r (select (narrow rgb 0 num-inliers 0) 1 0))) (r (rand r-base (+ r-base 10))))
+    (idx-bloop ((g (select (narrow rgb 0 num-inliers 0) 1 1))) (g (rand g-base (+ g-base 10))))
+    (idx-bloop ((b (select (narrow rgb 0 num-inliers 0) 1 2))) (b (rand b-base (+ b-base 10))))
+    (idx-bloop ((rgb (narrow rgb 0 (- num-samples num-inliers) num-inliers)))
+      (idx-bloop ((rgb rgb)) (rgb (rand 0 255))))
     (pretty rgb)
     ;; Show raw points.
     (if (not window) (new-window 0 0 (* 255 3) 255))
@@ -142,6 +139,8 @@
         (color-rgb r-norm g-norm 0)(fill-circle r g 1)
         (color-rgb 0 g-norm b-norm)(fill-circle (+ 255 g) b 1)
         (color-rgb r-norm 0 b-norm)(fill-circle (+ (* 2 255) r) b 1)))
+    ;; Compute mean.
+    (idx-eloop ((rgb rgb)(m m)) (idx-bloop ((rgb rgb)) (m (+ (m) (* rgb-dim-0-inv (rgb))))))
     ;; Do iterations.
     (for (i 0 iter)
       (median-rgb rgb i m)
@@ -152,27 +151,23 @@
       (pretty m))))
 
 ;; Height mean and variance features.
-(defconstant "FEATURE_MAP_NUM_PTS"         0)
-(defconstant "FEATURE_MAP_SUM_HT"          1)
-(defconstant "FEATURE_MAP_SUM_HT_SQ"       2)
+(defconstant "FEATURE_MAP_NUM_PTS"           0)
+(defconstant "FEATURE_MAP_SUM_HT"            1)
+(defconstant "FEATURE_MAP_SUM_HT_SQ"         2)
 ;; Height histogram features.
-(defconstant "FEATURE_MAP_NUM_HT_BIN_0"    3)
-(defconstant "FEATURE_MAP_NUM_HT_BIN_1"    4)
-(defconstant "FEATURE_MAP_NUM_HT_BIN_2"    5)
-(defconstant "FEATURE_MAP_NUM_HT_BIN_3"    6)
-(defconstant "FEATURE_MAP_NUM_HT_BIN_4"    7)
+(defconstant "FEATURE_MAP_NUM_HT_BIN_0"      3)
+(defconstant "FEATURE_MAP_NUM_HT_BIN_1"      4)
+(defconstant "FEATURE_MAP_NUM_HT_BIN_2"      5)
+(defconstant "FEATURE_MAP_NUM_HT_BIN_3"      6)
+(defconstant "FEATURE_MAP_NUM_HT_BIN_4"      7)
 ;; RGB median.
-(defconstant "FEATURE_MAP_RGB_MEDIAN_0"    8)
-(defconstant "FEATURE_MAP_RGB_MEDIAN_1"   11)
-(defconstant "FEATURE_MAP_RGB_MEDIAN_2"   14)
-(defconstant "FEATURE_MAP_RGB_MEDIAN_3"   17)
-(defconstant "FEATURE_MAP_RGB_MEDIAN_4"   20)
-(defconstant "FEATURE_MAP_RGB_MEDIAN_END" 23)
+(defconstant "FEATURE_MAP_RGB_MEDIAN_BEGIN" 8)
+(defconstant "FEATURE_MAP_RGB_MEDIAN_END"  19)
 ;;
-(defconstant "FEATURE_MAP_IDX_COUNT"     23)
-(defconstant "FEATURE_MAP_HT_BIN_COUNT"   5)
-(defconstant "FEATURE_MAP_HT_BIN_CM"     30)
-(defconstant "FEATURE_MAP_RGB_MEDIAN_ITER" 10)
+(defconstant "FEATURE_MAP_IDX_COUNT"       23)
+(defconstant "FEATURE_MAP_HT_BIN_COUNT"     5)
+(defconstant "FEATURE_MAP_HT_BIN_CM"       30)
+(defconstant "FEATURE_MAP_RGB_MEDIAN_ITER"  4)
 #?  (xyzrgb2feature-map <xyz> <rgb> <transform> <fm>)
 ;; Fill in feature map for each map cell using the point cloud <xyz>
 ;;   Features:
@@ -199,7 +194,7 @@
          (ht-bin-cm (/ @FEATURE_MAP_HT_BIN_CM 100.0))
          (ht-bin-base-idx @FEATURE_MAP_NUM_HT_BIN_0)
          (ht-bin-max-offset (- @FEATURE_MAP_HT_BIN_COUNT 1))
-         (rgb-bin-base-idx @FEATURE_MAP_RGB_MEDIAN_0)
+         (rgb-bin-base-idx @FEATURE_MAP_RGB_MEDIAN_BEGIN)
          (m (float-matrix-nc 3))
          (xyz-count 0))
     ((-float-) ht-bin-cm)
@@ -242,6 +237,7 @@
               ;; Store pointer to RGB keyed by map cell and bin.
               #{ const uint32_t key = map_cell[0] << 20 | map_cell[1] << 8 | $ht_bin_offset;
                  rgbBinRecords.push_back(std::make_pair(key, IDX_PTR($rgb, unsigned char))); #})))))
+;;              )))))
     ;; Sort binned rgb pixels and traverse image to compute median RGB.
     #{ if (!rgbBinRecords.empty())
        {
@@ -274,6 +270,8 @@
          // Initialize storage for median calculation.
          Midx_init_dim2($rgb_binned, bin_size, 3);
          unsigned char* rgb_binned = IDX_PTR($rgb_binned, unsigned char);
+         float* m = IDX_PTR($m, float);
+         memset(m, 0, 3 * sizeof(float));
          // For all rgb pixel records, map them into rgb_binned.
          for (; rec != recEnd; ++rec, rgb_binned += $rgb_binned->mod[0])
          {
@@ -284,6 +282,8 @@
            if ((keyMapCellPx != keyMapCell) || (keyCellBinPx != keyCellBin))
            {
 //             printf("**new bin: keyMapCell = %d, keyCellBin = %d\n", keyMapCell, keyCellBin);
+             // Compute mean.
+             m[0] /= bin_size; m[1] /= bin_size; m[2] /= bin_size;
              // Process median.
              #}
 ;;             (printf "(idx-dim rgb-binned) = (%d %d)\n"
@@ -303,13 +303,17 @@
              bin_size = static_cast<int>(fm_cell[fm_p2 * ($ht_bin_base_idx + keyCellBin)] + 0.5f);
              Midx_init_dim2($rgb_binned, bin_size, 3);
              rgb_binned = IDX_PTR($rgb_binned, unsigned char);
+             memset(m, 0, 3 * sizeof(float));
            }
            // Keep gathering rgb for the current bin.
 //           printf("(r, c) = (%d, %d), bin = %d\n", fm_r, fm_c, keyCellBin);
            memcpy(rgb_binned, rec->second, 3);
+           m[0] += rec->second[0]; m[1] += rec->second[1]; m[2] += rec->second[2];
          }
          // Median one more time for the final homies in the buffer.
          {
+           // Compute mean.
+           m[0] /= bin_size; m[1] /= bin_size; m[2] /= bin_size;
            #} (median-rgb rgb-binned @FEATURE_MAP_RGB_MEDIAN_ITER m) #{
            float* const fm_cell_rgb_bin = fm_cell + $rgb_bin_base_idx + (3 * keyCellBin);
            memcpy(fm_cell_rgb_bin, IDX_PTR($m, float), 3 * sizeof(float));

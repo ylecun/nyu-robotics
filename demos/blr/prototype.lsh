@@ -231,7 +231,8 @@
          (fm-lcl-feat (float-matrix-nc r c num-feat))
          (fm-gbl-masks (ubyte-matrix-nc r c 2))
          (fm-lcl-masks (ubyte-matrix-nc r c 2))
-         (img-rgb-median (ubyte-matrix r c @FEATURE_MAP_HT_BIN_COUNT 3)))
+         ;;(img-rgb-median (ubyte-matrix r c @FEATURE_MAP_HT_BIN_COUNT 3)))
+         )
 
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
@@ -242,14 +243,16 @@
                  (fm-lcl-mask-r (select fm-lcl-masks 2 0))
                  (fm-gbl-feat-r fm-gbl-feat)
                  (fm-lcl-feat-r fm-lcl-feat)
-                 (img-rgb-median img-rgb-median))
+                 ;;(img-rgb-median img-rgb-median))
+                 )
       (idx-pbloop ((fm-gbl fm-gbl-r)
                    (fm-lcl fm-lcl-r)
                    (fm-gbl-mask fm-gbl-mask-r)
                    (fm-lcl-mask fm-lcl-mask-r)
                    (fm-gbl-feat fm-gbl-feat-r)
                    (fm-lcl-feat fm-lcl-feat-r)
-                   (img-rgb-median img-rgb-median))
+                   ;;(img-rgb-median img-rgb-median))
+                   )
         ;; Mask only when there are no points.
         (fm-gbl-mask (if (> (fm-gbl @FEATURE_MAP_NUM_PTS) 0) 1 0))
         (fm-lcl-mask (if (> (fm-lcl @FEATURE_MAP_NUM_PTS) 0) 1 0))
@@ -277,22 +280,9 @@
               (idx-copy hist-gbl-rgb-src hist-gbl-rgb-dst))
             (idx-clear fm-gbl-feat)
             )
-          ;; Copy RGB median bin for debugging.
-          (img-rgb-median 0 0 (hist-lcl-rgb-src 0))
-          (img-rgb-median 0 1 (hist-lcl-rgb-src 1))
-          (img-rgb-median 0 2 (hist-lcl-rgb-src 2))
-          (img-rgb-median 1 0 (hist-lcl-rgb-src 3))
-          (img-rgb-median 1 1 (hist-lcl-rgb-src 4))
-          (img-rgb-median 1 2 (hist-lcl-rgb-src 5))
-          (img-rgb-median 2 0 (hist-lcl-rgb-src 6))
-          (img-rgb-median 2 1 (hist-lcl-rgb-src 7))
-          (img-rgb-median 2 2 (hist-lcl-rgb-src 8))
-          (img-rgb-median 3 0 (hist-lcl-rgb-src 9))
-          (img-rgb-median 3 1 (hist-lcl-rgb-src 10))
-          (img-rgb-median 3 2 (hist-lcl-rgb-src 11))
-          (img-rgb-median 4 0 (hist-lcl-rgb-src 12))
-          (img-rgb-median 4 1 (hist-lcl-rgb-src 13))
-          (img-rgb-median 4 2 (hist-lcl-rgb-src 14))
+;;          ;; Copy RGB median bin for debugging.
+;;          (for (i 0 (- @FEATURE_MAP_RGB_MEDIAN_END @FEATURE_MAP_RGB_MEDIAN_BEGIN 1))
+;;            (img-rgb-median (/ i 3) (mod i 3) (hist-lcl-rgb-src i)))
           (if (<> 0 lcl-num)
             (let* ((lcl-mu (/ lcl-sum-x lcl-num))
                    (lcl-var (+ (/ (- lcl-sum-xx (* 2 (* lcl-mu lcl-sum-x))) lcl-num) (* lcl-mu lcl-mu))))
@@ -339,6 +329,9 @@
            (px-correspond-lcl (double-matrix-nc 1000 2))
            (img-dispar (ubyte-matrix r c 3))
            (img-dispar-match (narrow (narrow img-dispar 0 r-match window-dim) 1 c-match window-dim))
+
+           (interest-pt-thresh 0.001)
+           (match-pt-thresh 0.2)
 
            (masked-pts 0)
            (sum-x (float-matrix num-feat))
@@ -407,7 +400,8 @@
             ;; See if this point is interesting by normalizing closest point by norm square.
             (idx-m1dotm1 fm-gbl-feat-pt fm-gbl-feat-pt fm-gbl-feat-pt-norm-sq)
 ;;            (printf "closest / norm-sq = %f\n" (/ (min-dist-sq-0) (fm-gbl-feat-pt-norm-sq)))
-            (when (and (> masked-pts 0) (< (/ (min-dist-sq-0) (fm-gbl-feat-pt-norm-sq)) 0.005))
+            (when (and (> masked-pts 0)
+                       (< (/ (min-dist-sq-0) (fm-gbl-feat-pt-norm-sq)) interest-pt-thresh))
 ;;              (printf "interest-pt (%d, %d), fm-gbl-feat-pt =\n" i j)
               ;; Find this point in the local map.  Subtract global point from the
               ;; local neighborhood and take norm square.
@@ -438,8 +432,8 @@
               ;; We have a match when the second closest far enough from the first and when
               ;; the closest is close enough.
 ;;              (printf "closest / 2nd-closest = %f\n" (/ (min-dist-sq-0) (min-dist-sq-1)))
-              (if (or (or (= masked-pts 0) (>= (/ (min-dist-sq-0) (min-dist-sq-1)) 0.1))
-                      (> (/ (min-dist-sq-0) (fm-gbl-feat-pt-norm-sq)) 0.005))
+              (if (or (or (= masked-pts 0) (>= (/ (min-dist-sq-0) (min-dist-sq-1)) match-pt-thresh))
+                      (> (/ (min-dist-sq-0) (fm-gbl-feat-pt-norm-sq)) interest-pt-thresh))
                 (progn (img-dispar-match 2 128) (img-dispar (cell-dst 0) (cell-dst 1) 0 128)
                   ;;(printf "no match : closest = %f, 2nd = %f\n" (min-dist-sq-0) (min-dist-sq-1))
                   )
@@ -552,7 +546,12 @@
          (cm-local-rgb ())
          (fm-global-cell (int-matrix-nc 2))
          (tmr (new stopwatch))
-         (tform-odom-correct (float-matrix 4 4)))
+         (tform-odom (float-matrix 4 4))
+         (tform-odom-correct (float-matrix 4 4))
+         (tform-odom-corrected (float-matrix 4 4))
+         (tform-full (float-matrix 4 4))
+         (odom-orien (float-matrix 4))
+         (odom-pos (float-matrix 3)))
     (for (i 0 3) (tform-odom-correct i i 1))
     (idx-f2fill (select :fm-global:data 2 @FEATURE_MAP_IDX_COUNT) (- (infinity)))
     ;; Setup cost maps.
@@ -568,6 +567,7 @@
         (setq wnd-width (+ (idx-dim cm-global-rgb 1) (idx-dim cm-local-rgb 1)))
         (setq wnd-height (idx-dim cm-global-rgb 0))
         (new-window 0 0 wnd-width wnd-height)))
+    (cls)
     ;; Do n loops of processing.
     (for (i 0 (- n 1))
       ;; Grab new data.
@@ -576,32 +576,28 @@
       (while (< (==> tb update-camera-depth-points) 0) ())
       (while (< (==> tb update-camera-rgb-image-color) 0) ())
       ;; Convert points to feature map.
-      (let ((tform-odom (float-matrix 4 4))
-            (odom-orien (float-matrix 4))
-            (odom-pos (float-matrix 3))
-            (tform-odom-corrected (float-matrix 4 4))
-            (tform-full (float-matrix 4 4)))
-        ;; Update transform using odometry.
+      ;; Update transform using odometry.
 ;;        (idx-copy :tb:odom-pose-position odom-pos)
 ;;        (idx-copy :tb:odom-pose-orientation odom-orien)
-        (idx-copy :tb:robot-pose-ekf-position odom-pos)
-        (idx-copy :tb:robot-pose-ekf-orientation odom-orien)
-        ;; Flip the angle (invert).
-        (odom-orien 3 (- (odom-orien 3)))
-        (quaternion2matrix odom-orien tform-odom)
-        ;; Apply orientation to the position.
-        (idx-m2dotm1 (narrow (narrow tform-odom 0 3 0) 1 3 0) odom-pos
-                     (select (narrow tform-odom 0 3 0) 1 3))
-        (tform-odom 3 3 1)
+      (idx-copy :tb:robot-pose-ekf-position odom-pos)
+      (idx-copy :tb:robot-pose-ekf-orientation odom-orien)
+      ;; Flip the angle (invert).
+      (odom-orien 3 (- (odom-orien 3)))
+      (quaternion2matrix odom-orien tform-odom)
+      ;; Apply orientation to the position.
+      (idx-m2dotm1 (narrow (narrow tform-odom 0 3 0) 1 3 0) odom-pos
+                   (select (narrow tform-odom 0 3 0) 1 3))
+      (tform-odom 3 3 1)
 ;;        (printf "tform-odom\n") (pretty tform-odom)
-        ;; Correct the odometry using the last correction factor.
-        (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
-        (printf "tform-odom-correct\n") (pretty tform-odom-correct)
-        (printf "cos(theta) : %0.5f\n" (tform-odom-correct 0 0))
-        (printf "sin(theta) : %0.5f\n" (tform-odom-correct 1 0))
-        ;; Get robot world position in map coordinates.
-        (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
-        ;; Compute local map using current odometry guess.
+      ;; Correct the odometry using the last correction factor.
+      (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
+      (printf "tform-odom-correct\n") (pretty tform-odom-correct)
+      (printf "cos(theta) : %0.5f\n" (tform-odom-correct 0 0))
+      (printf "sin(theta) : %0.5f\n" (tform-odom-correct 1 0))
+      ;; Get robot world position in map coordinates.
+      (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
+      ;; Compute local map using current odometry guess.
+      (for (i 0 2)
         (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
                                 tform-odom-corrected turtlebot-c2v fm-global fm-local)
         ;; Register feature maps using visual odometry.
@@ -612,31 +608,30 @@
           (for (i 0 3) (tform-odom-correct-upd i i 1))
           (setq num-matched (fm-local-registration fm-local fm-global fm-global-cell
                                                    tform-odom-correct-upd-rot
-                                                   tform-odom-correct-upd-trans 3))
-          (if (= 0 num-matched)
-            () ;; Do nothing when no registration information.
+                                                   tform-odom-correct-upd-trans (- 5 (* 2 i))))
+          (when (> num-matched 0)
             ;; Update odometry correction transformation by adding the current one.
             (progn
               (idx-copy tform-odom-correct tform-odom-corrected)
               (idx-m2timesm2 tform-odom-correct-upd tform-odom-corrected tform-odom-correct))
             ;; Correct the odometry using the new correction factor.
             (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
-;;            (printf "tform-odom-corrected\n") (pretty tform-odom-corrected)
+  ;;            (printf "tform-odom-corrected\n") (pretty tform-odom-corrected)
             ;; Get robot world position in map coordinates.
             (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
             ;; Compute local map using current odometry guess.
             (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
                                     tform-odom-corrected turtlebot-c2v fm-global fm-local))))
-      (progn (feature-map2cost-map :fm-local:data :cm-local:data)
-             (setq :cm-local:pcl-density :fm-local:pcl-density))
-      ;; Update global map (with cost map rgb optimizations).
-      (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr get))
-      ;; Prepare for display.
-      (cost-map2rgb 0.5 cm-global cm-global-rgb)
-      (cost-map2rgb 0.5 cm-local cm-local-rgb)
-      ;; Draw maps.
-      (rgb-draw-matrix 0 0 cm-global-rgb 1 1)
-      (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1))))
+    (progn (feature-map2cost-map :fm-local:data :cm-local:data)
+           (setq :cm-local:pcl-density :fm-local:pcl-density))
+    ;; Update global map (with cost map rgb optimizations).
+    (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr get))
+    ;; Prepare for display.
+    (cost-map2rgb 1.0 cm-global cm-global-rgb)
+    (cost-map2rgb 1.0 cm-local cm-local-rgb)
+    ;; Draw maps.
+    (rgb-draw-matrix 0 0 cm-global-rgb 1 1)
+    (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1))))
 
 ;;(let ((dhc-make-lushflags (concat dhc-make-lushflags " -fopenmp")))
   (dhc-make-with-c++ () () ;;"/usr/lib/gcc/i486-linux-gnu/4.4/libgomp.so"
