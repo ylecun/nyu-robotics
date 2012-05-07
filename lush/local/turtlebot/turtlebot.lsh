@@ -135,10 +135,6 @@
 (setq c-include-path (cons (concat (rospath "nav_msgs")
                            "/msg_gen/cpp/include") c-include-path))
 
-#? turtlebot-c2v
-;; Transformation from Kinect to Turtlebot base.
-(defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.25] [0 0 0 1]])
-
 #? (turtlebot-dummy)
 ;; Setup global includes for turtlebot.
 (de turtlebot-dummy ()
@@ -146,10 +142,49 @@
   (cheader "#include \"turtlebot/turtlebot.h\"")
   ())
 
+(defclass ros-msg-arr object
+  ((-gptr- "idx*") arr-idx)
+  ((-gptr- "idx*") arr-idx-init)
+  ((-gptr- "srg*") arr-srg-init))
+
+(defmethod ros-msg-arr ros-msg-arr (idx-in)
+  ((-gptr-) idx-in)
+  (setq arr-idx idx-in)
+  (setq arr-idx-init (to-gptr #{ new idx #}))
+  (setq arr-srg-init (to-gptr #{ new srg #}))
+  #{ // Retain initial idx and srg.
+//     printf("idx_in = %p\n", $idx_in);
+//     printf("arr_idx_init = %p\n", $arr_idx_init);
+//     printf("arr_srg_init = %p\n", $arr_srg_init);
+     memcpy($arr_idx_init, $arr_idx,      sizeof(*$arr_idx));
+     memcpy($arr_srg_init, $arr_idx->srg, sizeof(*$arr_idx->srg)); #}
+  ())
+
+(defmethod ros-msg-arr reset ()
+  #{ // Replace initial idx and srg.
+//     printf("arr_idx = %p\n", $arr_idx);
+//     printf("arr_idx_init = %p\n", $arr_idx_init);
+//     printf("arr_srg_init = %p\n", $arr_srg_init);
+     memcpy($arr_idx,      $arr_idx_init, sizeof(*$arr_idx));   
+     memcpy($arr_idx->srg, $arr_srg_init, sizeof(*$arr_idx->srg)); #}
+  ())
+
+(defmethod ros-msg-arr -destructor ()
+  #{ delete $arr_idx_init;
+     delete $arr_srg_init; #}
+  ())
+
+#? turtlebot-c2v
+;; Transformation from Kinect to Turtlebot base.
+(defparameter turtlebot-c2v [f [0 0 1 -0.10] [1 0 0 -0.01] [0 1 0 -0.25] [0 0 0 1]])
+
 #? turtlebot
 ;; Control interface for the ROS turtlebot.
 (defclass turtlebot object
   ((-gptr- "RosClient*") client)
+  ((-obj- (ros-msg-arr)) ros-msg-arr-camera-depth-image-raw)
+  ((-obj- (ros-msg-arr)) ros-msg-arr-camera-rgb-image-color)
+  ((-obj- (ros-msg-arr)) ros-msg-arr-camera-depth-points)
   ;; Depth image.
   ((-idx2- (-short-)) camera-depth-image-raw)
   ((-idx3- (-ubyte-)) camera-rgb-image-color)
@@ -187,13 +222,19 @@
   (setq robot-pose-ekf-covariance (double-matrix 36))
   ;; Depth points (XYZ).
   (setq camera-depth-points (float-matrix-nc 1 1 1))
+  ;; Message pointer objects.
+  (setq ros-msg-arr-camera-depth-image-raw (new ros-msg-arr (to-gptr camera-depth-image-raw)))
+  (setq ros-msg-arr-camera-rgb-image-color (new ros-msg-arr (to-gptr camera-rgb-image-color)))
+  (setq ros-msg-arr-camera-depth-points (new ros-msg-arr (to-gptr camera-depth-points)))
   ())
 
 #? (delete <turtlebot>)
 (defmethod turtlebot -destructor ()
+  (==> ros-msg-arr-camera-depth-image-raw reset)
+  (==> ros-msg-arr-camera-rgb-image-color reset)
+  (==> ros-msg-arr-camera-depth-points reset)
   #{ delete $client; #}
-  ()
-  )
+  ())
 
 #? (==> <turtlebot> start-sub-camera-depth-image-raw)
 ;; Start the camera depth image_raw subscriber.
@@ -286,6 +327,10 @@
   ()
   `(,(concat (rospath "roscpp") "/lib/libros.so"))
   turtlebot-dummy
+  (ros-msg-arr
+    ros-msg-arr
+    reset
+    -destructor)
   (turtlebot
     turtlebot
     -destructor
@@ -306,9 +351,7 @@
     update-camera-depth-points
     ;; Publish cmd_vel.
     start-pub-cmd-vel
-    publish_cmd_vel
-    )
-  )
+    publish_cmd_vel))
 
 #? turtlebot-test
 ;; Create a graphics window and show the raw depth data.

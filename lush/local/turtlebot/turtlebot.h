@@ -17,9 +17,20 @@ struct RosLushImageSubscriber
   inline static int CopyMsgData(const msg_type::ConstPtr& msg,
                                 lush_convert_type* data)
   {
-    const size_t dim3 = msg->step / msg->width;
-    Midx_setdim3(data, msg->height, msg->width, dim3);
-    Midx_update_mod_from_dim(data);
+    const int type_size = storage_type_size[data->srg->type];
+    const size_t dim3 = msg->step / (msg->width * type_size);
+    Midx_dim(data, 0) = msg->height;
+    Midx_dim(data, 1) = msg->width;
+    Midx_mod(data, 0) = dim3 * msg->width;
+    Midx_mod(data, 1) = dim3;
+//    printf("idx->ndim = %d, type_size = %d, msg->height = %d, "
+//           "msg->width = %d, msg->step = %d, dim3 = %d\n",
+//           data->ndim, type_size, msg->height, msg->width, msg->step, dim3);
+    if (3 == data->ndim)
+    {
+      Midx_dim(data, 2) = dim3;
+      Midx_mod(data, 2) = 1;
+    }
     data->srg->data = const_cast<unsigned char *>(&msg->data[0]);
     return DATA_COPY_HOLD_REF;
   }
@@ -138,7 +149,9 @@ struct RosLushCameraDepthPoints
     // Just point the idx to the data.
     const size_t dim3 = msg->point_step / sizeof(float);
     Midx_setdim3(data, msg->height, msg->width, dim3);
-    Midx_update_mod_from_dim(data);
+    Midx_mod(data, 2) = 1;
+    Midx_mod(data, 1) = dim3;
+    Midx_mod(data, 0) = dim3 * msg->width;
     data->srg->data = const_cast<unsigned char *>(&msg->data[0]);
     return DATA_COPY_HOLD_REF;
   }
