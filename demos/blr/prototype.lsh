@@ -204,13 +204,22 @@
   ())
 
 ;; Resample a local feature map by solving a least squares optimization.
-(de fm-local-registration (fm-lcl fm-gbl fm-gbl-cell rot offset window-dim)
+(de fm-local-registration (fm-lcl fm-gbl fm-gbl-cell
+                           fm-gbl-feat fm-lcl-feat
+                           px-correspond-gbl px-correspond-lcl
+                           rot offset window-dim 
+                           img-dispar)
   ((-obj- (feature-map)) fm-lcl)
   ((-obj- (feature-map)) fm-gbl)
+  ((-idx3- (-float-)) fm-gbl-feat)
+  ((-idx3- (-float-)) fm-lcl-feat)
+  ((-idx2- (-double-)) px-correspond-gbl)
+  ((-idx2- (-double-)) px-correspond-lcl)
   ((-idx1- (-int-)) fm-gbl-cell)
   ((-idx2- (-float-)) rot)
   ((-idx1- (-float-)) offset)
   ((-int-) window-dim)
+  ((-idx3- (-ubyte-)) img-dispar)
   ;; Find correspondences by looking in a square neighborhood about the image of
   ;; significant features in the global map projected into the local map.
   ;; Define sigificant features by their feature vector
@@ -223,24 +232,24 @@
          (c (:fm-lcl:full-dim 1)) 
          (gbl-crop-ul (idx-sub fm-gbl-cell :fm-lcl:half-dim))
          (fm-gbl-crop (narrow (narrow :fm-gbl:data 0 r (gbl-crop-ul 0)) 1 c (gbl-crop-ul 1)))
-         (num-feat-ht 2)
+         (num-feat-ht 0)
          (num-feat-hist @FEATURE_MAP_HT_BIN_COUNT)
          (num-feat-rgb (* @FEATURE_MAP_HT_BIN_COUNT 3))
          (num-feat (+ num-feat-ht num-feat-hist num-feat-rgb))
-         (fm-gbl-feat (float-matrix-nc r c num-feat))
-         (fm-lcl-feat (float-matrix-nc r c num-feat))
-         (fm-gbl-masks (ubyte-matrix-nc r c 2))
-         (fm-lcl-masks (ubyte-matrix-nc r c 2))
-         ;;(img-rgb-median (ubyte-matrix r c @FEATURE_MAP_HT_BIN_COUNT 3)))
+         (fm-gbl-mask (ubyte-matrix-nc r c))
+         (fm-lcl-mask (ubyte-matrix-nc r c))
+         ;;(img-rgb-median (ubyte-matrix r c @FEATURE_MAP_HT_BIN_COUNT 3))
          )
 
+    (idx-f3resize fm-gbl-feat r c num-feat)
+    (idx-f3resize fm-lcl-feat r c num-feat)
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
     (idx-pbloop ((fm-gbl-r fm-gbl-crop)
                  (fm-lcl-r :fm-lcl:data)
-                 (fm-gbl-mask-r (select fm-gbl-masks 2 0))
-                 (fm-lcl-mask-r (select fm-lcl-masks 2 0))
+                 (fm-gbl-mask-r fm-gbl-mask)
+                 (fm-lcl-mask-r fm-lcl-mask)
                  (fm-gbl-feat-r fm-gbl-feat)
                  (fm-lcl-feat-r fm-lcl-feat)
                  ;;(img-rgb-median img-rgb-median))
@@ -259,52 +268,38 @@
         ;; Compute mean, variance, histogram.
         (let ((gbl-num (fm-gbl @FEATURE_MAP_NUM_PTS))
               (lcl-num (fm-lcl @FEATURE_MAP_NUM_PTS))
-              (gbl-sum-x (fm-gbl @FEATURE_MAP_SUM_HT))
-              (lcl-sum-x (fm-lcl @FEATURE_MAP_SUM_HT))
-              (gbl-sum-xx (fm-gbl @FEATURE_MAP_SUM_HT_SQ))
-              (lcl-sum-xx (fm-lcl @FEATURE_MAP_SUM_HT_SQ))
-              (hist-gbl-denorm (narrow fm-gbl 0 num-feat-hist @FEATURE_MAP_NUM_HT_BIN_0))
-              (hist-lcl-denorm (narrow fm-lcl 0 num-feat-hist @FEATURE_MAP_NUM_HT_BIN_0))
+;;              (gbl-sum-x (fm-gbl @FEATURE_MAP_SUM_HT))
+;;              (lcl-sum-x (fm-lcl @FEATURE_MAP_SUM_HT))
+;;              (gbl-sum-xx (fm-gbl @FEATURE_MAP_SUM_HT_SQ))
+;;              (lcl-sum-xx (fm-lcl @FEATURE_MAP_SUM_HT_SQ))
+              (hist-gbl-denorm (narrow fm-gbl 0 num-feat-hist @FEATURE_MAP_NUM_HT_BIN_BEGIN))
+              (hist-lcl-denorm (narrow fm-lcl 0 num-feat-hist @FEATURE_MAP_NUM_HT_BIN_BEGIN))
               (hist-gbl-norm (narrow fm-gbl-feat 0 num-feat-hist num-feat-ht))
               (hist-lcl-norm (narrow fm-lcl-feat 0 num-feat-hist num-feat-ht))
-              (hist-gbl-rgb-src (narrow fm-gbl 0 num-feat-rgb @FEATURE_MAP_RGB_MEDIAN_0))
-              (hist-lcl-rgb-src (narrow fm-lcl 0 num-feat-rgb @FEATURE_MAP_RGB_MEDIAN_0))
+              (hist-gbl-rgb-src (narrow fm-gbl 0 num-feat-rgb @FEATURE_MAP_RGB_MEDIAN_BEGIN))
+              (hist-lcl-rgb-src (narrow fm-lcl 0 num-feat-rgb @FEATURE_MAP_RGB_MEDIAN_BEGIN))
               (hist-gbl-rgb-dst (narrow fm-gbl-feat 0 num-feat-rgb (+ num-feat-ht num-feat-hist)))
               (hist-lcl-rgb-dst (narrow fm-lcl-feat 0 num-feat-rgb (+ num-feat-ht num-feat-hist))))
-          (if (<> 0 gbl-num)
-            (let* ((gbl-mu (/ gbl-sum-x gbl-num))
-                   (gbl-var (+ (/ (- gbl-sum-xx (* 2 (* gbl-mu gbl-sum-x))) gbl-num) (* gbl-mu gbl-mu))))
-              (fm-gbl-feat 0 gbl-mu)
-              (fm-gbl-feat 1 gbl-var)
-              (idx-f1dotc hist-gbl-denorm (/ 1.0 gbl-num) hist-gbl-norm)
-              (idx-copy hist-gbl-rgb-src hist-gbl-rgb-dst))
-            (idx-clear fm-gbl-feat)
-            )
+
 ;;          ;; Copy RGB median bin for debugging.
-;;          (for (i 0 (- @FEATURE_MAP_RGB_MEDIAN_END @FEATURE_MAP_RGB_MEDIAN_BEGIN 1))
-;;            (img-rgb-median (/ i 3) (mod i 3) (hist-lcl-rgb-src i)))
-          (if (<> 0 lcl-num)
-            (let* ((lcl-mu (/ lcl-sum-x lcl-num))
-                   (lcl-var (+ (/ (- lcl-sum-xx (* 2 (* lcl-mu lcl-sum-x))) lcl-num) (* lcl-mu lcl-mu))))
-              (fm-lcl-feat 0 lcl-mu)
-              (fm-lcl-feat 1 lcl-var)
-              (idx-f1dotc hist-lcl-denorm (/ 1.0 lcl-num) hist-lcl-norm)
-              (idx-copy hist-lcl-rgb-src hist-lcl-rgb-dst))
-            (idx-clear fm-lcl-feat)))))
-    ;; Copy masks unchanged.
-    (idx-copy (select fm-gbl-masks 2 0 )(select fm-gbl-masks 2 1))
-    (idx-copy (select fm-lcl-masks 2 0 )(select fm-lcl-masks 2 1))
-;;    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 1 r) (select fm-lcl-masks 2 1) 0 1 1 1)
-;;    (rgb-draw-matrix (* c 0) (* 3 r) (select img-rgb-median 2 0) 1 1)
-;;    (rgb-draw-matrix (* c 1) (* 3 r) (select img-rgb-median 2 1) 1 1)
-;;    (rgb-draw-matrix (* c 2) (* 3 r) (select img-rgb-median 2 2) 1 1)
-;;    (rgb-draw-matrix (* c 3) (* 3 r) (select img-rgb-median 2 3) 1 1)
-;;    (rgb-draw-matrix (* c 4) (* 3 r) (select img-rgb-median 2 4) 1 1)
-;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 0 r) (select fm-gbl-feat 2 2) 0 1 1 1)
-;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 1 r) (select fm-gbl-feat 2 3) 0 1 1 1)
-;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 2 r) (select fm-gbl-feat 2 4) 0 1 1 1)
-;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 3 r) (select fm-gbl-feat 2 5) 0 1 1 1)
-;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 4 r) (select fm-gbl-feat 2 6) 0 1 1 1)
+;;          (for (i 0 (- @FEATURE_MAP_RGB_MEDIAN_END @FEATURE_MAP_RGB_MEDIAN_BEGIN 1)) ((-int-) i)
+;;            (img-rgb-median (/ i 3) (mod i 3) (* (hist-lcl-rgb-src i) 255)))
+
+          (if (= 0 gbl-num)
+            (idx-clear fm-gbl-feat)
+            (idx-f1dotc hist-gbl-denorm (/ num-feat-rgb gbl-num) hist-gbl-norm)
+            (idx-copy hist-gbl-rgb-src hist-gbl-rgb-dst))
+          (if (= 0 lcl-num)
+            (idx-clear fm-lcl-feat)
+              (idx-f1dotc hist-lcl-denorm (/ num-feat-rgb lcl-num) hist-lcl-norm)
+              (idx-copy hist-lcl-rgb-src hist-lcl-rgb-dst)))))
+;;    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) fm-lcl-mask 0 1 1 1)
+;;    (for (i 0 1)
+;;      (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* i r) (select fm-gbl-feat 2 (+ 2 i)) 0 1 1 1))
+;;    (gray-draw-matrix (+ (:fm-gbl:full-dim 1) c) (* 2 r)
+;;      (select fm-gbl-feat 2 (+ num-feat-ht num-feat-hist -1)) 0 1 1 1)
+;;    (for (i 0 2) (rgb-draw-matrix (* c i) (* 3 r) (select img-rgb-median 2 (* 2 i)) 1 1))
+;;    (rgb-draw-matrix (* c 3) (* 3 r) (select img-rgb-median 2 (- (/ num-feat-rgb 3) 1)) 1 1)
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
     ;; ******************** FEATURE EXTRACTION ********************
@@ -314,44 +309,42 @@
     ;; ******************** INTEREST POINT DETECTION & MATCHING ********************
     (let* ((fm-gbl-feat-neigh (unfold (unfold fm-gbl-feat 0 neigh-size 1) 1 neigh-size 1))
            (fm-lcl-feat-neigh (unfold (unfold fm-lcl-feat 0 neigh-size 1) 1 neigh-size 1))
-           (fm-gbl-masks-neigh (unfold (unfold fm-gbl-masks 0 neigh-size 1) 1 neigh-size 1))
-           (fm-lcl-masks-neigh (unfold (unfold fm-lcl-masks 0 neigh-size 1) 1 neigh-size 1))
+           (fm-gbl-mask-neigh (unfold (unfold fm-gbl-mask 0 neigh-size 1) 1 neigh-size 1))
+           (fm-lcl-mask-neigh (unfold (unfold fm-lcl-mask 0 neigh-size 1) 1 neigh-size 1))
            (r-match (idx-dim fm-gbl-feat-neigh 0))
            (c-match (idx-dim fm-gbl-feat-neigh 1))
-           (fm-gbl-masks-match (narrow (narrow fm-gbl-masks 0 r-match window-dim) 1 c-match window-dim))
-           (fm-lcl-masks-match (narrow (narrow fm-lcl-masks 0 r-match window-dim) 1 c-match window-dim))
-           (fm-gbl-pt (narrow (narrow  fm-gbl-crop 0 r-match window-dim) 1 c-match window-dim))
-           (fm-lcl-pt (narrow (narrow :fm-lcl:data 0 r-match window-dim) 1 c-match window-dim))
-           (fm-gbl-feat-pt (narrow (narrow fm-gbl-feat 0 r-match window-dim) 1 c-match window-dim))
+;;           (fm-gbl-mask-match (narrow (narrow fm-gbl-mask 0 r-match window-dim) 1 c-match window-dim))
+           (fm-lcl-mask-match (narrow (narrow fm-lcl-mask 0 r-match window-dim) 1 c-match window-dim))
+;;           (fm-gbl-pt (narrow (narrow  fm-gbl-crop 0 r-match window-dim) 1 c-match window-dim))
+;;           (fm-lcl-pt (narrow (narrow :fm-lcl:data 0 r-match window-dim) 1 c-match window-dim))
+;;           (fm-gbl-feat-pt (narrow (narrow fm-gbl-feat 0 r-match window-dim) 1 c-match window-dim))
            (fm-lcl-feat-pt (narrow (narrow fm-lcl-feat 0 r-match window-dim) 1 c-match window-dim))
 
-           (px-correspond-gbl (double-matrix-nc 1000 2))
-           (px-correspond-lcl (double-matrix-nc 1000 2))
-           (img-dispar (ubyte-matrix r c 3))
-           (img-dispar-match (narrow (narrow img-dispar 0 r-match window-dim) 1 c-match window-dim))
+           ;; Ratio of distance to closest point in global window to norm of
+           ;; the global point. Smaller is more permissive.
+           (interest-pt-thresh (* 0.3 0.3))
+           ;; Ratio of closest distance to next-closest distance in local
+           ;; window. Larger is more permissive.
+           (match-pt-thresh (* 0.80 0.80))
 
-           (interest-pt-thresh 0.001)
-           (match-pt-thresh 0.2)
-
+           (i window-dim) ;; Local map coordinate.
+           (j window-dim) ;; Local map coordinate.
            (masked-pts 0)
-           (sum-x (float-matrix num-feat))
-           (sum-xx (float-matrix num-feat))
-           (mu (float-matrix-nc num-feat))
-           (var (float-matrix-nc num-feat))
-           (i window-dim)
-           (j window-dim)
            (num-matched 0)
 
            ;; Inerest point detection.
            (match-offset (int-matrix 2))
            (min-dist-sq-0 [d@ 0])
            (min-dist-sq-1 [d@ 0])
-           (fm-gbl-feat-pt-norm-sq [d@ 0])
-           (diff-tmp (float-matrix-nc (idx-dim fm-gbl-feat 2)))
-           (dist-sq [f@ 0])
+           (fm-lcl-feat-pt-norm-sq [d@ 0])
+           (diff-tmp (double-matrix-nc (idx-dim fm-gbl-feat 2)))
+           (dist-sq [d@ 0])
            (cell-src (int-matrix-nc 2))
            (cell-dst (int-matrix-nc 2))
            (world-cell-tmp (float-matrix-nc 2)))
+
+      ((-float-) interest-pt-thresh)
+      ((-float-) match-pt-thresh)
       ((-int-) masked-pts)
       ((-int-) i)
       ((-int-) j)
@@ -360,28 +353,30 @@
       ;; for it in the local neighborhood.
       (idx-bloop ((fm-gbl-feat-neigh fm-gbl-feat-neigh)
                   (fm-lcl-feat-neigh fm-lcl-feat-neigh)
-                  (fm-gbl-masks-neigh fm-gbl-masks-neigh)
-                  (fm-lcl-masks-neigh fm-lcl-masks-neigh)
-                  (fm-gbl-feat-pt fm-gbl-feat-pt)
-                  (fm-gbl-pt fm-gbl-pt)
-                  (img-dispar-match img-dispar-match)
-                  (fm-gbl-masks-match fm-gbl-masks-match))
+                  (fm-gbl-mask-neigh fm-gbl-mask-neigh)
+                  (fm-lcl-mask-neigh fm-lcl-mask-neigh)
+;;                  (fm-gbl-feat-pt fm-gbl-feat-pt)
+                  (fm-lcl-feat-pt fm-lcl-feat-pt)
+;;                  (fm-gbl-pt fm-gbl-pt)
+;;                  (fm-gbl-mask-match fm-gbl-mask-match)
+                  (fm-lcl-mask-match fm-lcl-mask-match))
         (setq j window-dim)
         (idx-bloop ((fm-gbl-feat-neigh fm-gbl-feat-neigh)
                     (fm-lcl-feat-neigh fm-lcl-feat-neigh)
-                    (fm-gbl-masks-neigh fm-gbl-masks-neigh)
-                    (fm-lcl-masks-neigh fm-lcl-masks-neigh)
-                    (fm-gbl-feat-pt fm-gbl-feat-pt)
-                    (fm-gbl-pt fm-gbl-pt)
-                    (img-dispar-match img-dispar-match)
-                    (fm-gbl-masks-match fm-gbl-masks-match))
+                    (fm-gbl-mask-neigh fm-gbl-mask-neigh)
+                    (fm-lcl-mask-neigh fm-lcl-mask-neigh)
+;;                    (fm-gbl-feat-pt fm-gbl-feat-pt)
+                    (fm-lcl-feat-pt fm-lcl-feat-pt)
+;;                    (fm-gbl-pt fm-gbl-pt)
+;;                    (fm-gbl-mask-match fm-gbl-mask-match)
+                    (fm-lcl-mask-match fm-lcl-mask-match))
           ;; See if this point is interesting and could match by taking the
           ;; difference between this point and all points in the local neighborhood.
           ;; The closest norm squared difference will give an indication that the
           ;; point is unique.
-          (when (<> (fm-gbl-masks-match 1) 0)
+          (when (<> (fm-lcl-mask-match) 0)
+            (idx-m1dotm1 fm-lcl-feat-pt fm-lcl-feat-pt fm-lcl-feat-pt-norm-sq)
             (min-dist-sq-0 (double-inf))
-            (min-dist-sq-1 (double-inf))
             (setq masked-pts 0)
             (for (i (- window-dim) window-dim)
               (for (j (- window-dim) window-dim)
@@ -389,20 +384,20 @@
                 ((-int-) j)
                 (let* ((i-pt (+ i window-dim))
                        (j-pt (+ j window-dim))
-                       (fm-gbl-neigh-pt (select (select fm-gbl-feat-neigh 1 i-pt) 1 j-pt))
-                       (fm-gbl-mask-pt (select (select fm-gbl-masks-neigh 1 i-pt) 1 j-pt)))
-                  (when (and (or (<> 0 i) (<> 0 j)) (<> 0 (fm-gbl-mask-pt 1)))
+                       (fm-lcl-neigh-pt (select (select fm-lcl-feat-neigh 1 i-pt) 1 j-pt))
+                       (fm-lcl-mask-pt (select (select fm-lcl-mask-neigh 0 i-pt) 0 j-pt)))
+                  (when (and (or (<> 0 i) (<> 0 j)) (<> 0 (fm-lcl-mask-pt)))
                     (incr masked-pts)
                     ;; Check distance to point.
-                    (idx-sub fm-gbl-feat-pt fm-gbl-neigh-pt diff-tmp)
+                    (idx-sub fm-lcl-feat-pt fm-lcl-neigh-pt diff-tmp)
                     (idx-m1dotm1 diff-tmp diff-tmp dist-sq)
-                    (when (< (dist-sq) (min-dist-sq-0)) (min-dist-sq-0 (dist-sq)))))))
+                    (min-dist-sq-0 (min (dist-sq) (min-dist-sq-0)))))))
             ;; See if this point is interesting by normalizing closest point by norm square.
-            (idx-m1dotm1 fm-gbl-feat-pt fm-gbl-feat-pt fm-gbl-feat-pt-norm-sq)
-;;            (printf "closest / norm-sq = %f\n" (/ (min-dist-sq-0) (fm-gbl-feat-pt-norm-sq)))
-            (when (and (> masked-pts 0)
-                       (< (/ (min-dist-sq-0) (fm-gbl-feat-pt-norm-sq)) interest-pt-thresh))
-;;              (printf "interest-pt (%d, %d), fm-gbl-feat-pt =\n" i j)
+;;            (printf "closest = %f, norm = %f\n" (min-dist-sq-0) (fm-lcl-feat-pt-norm-sq))
+;;            (printf "closest / norm = %f\n" (/ (min-dist-sq-0) (fm-lcl-feat-pt-norm-sq)))
+            (when (and (> masked-pts window-dim)
+                       (> (/ (min-dist-sq-0) (fm-lcl-feat-pt-norm-sq)) interest-pt-thresh))
+;;              (printf "interest-pt (%d, %d), fm-lcl-feat-pt =\n" i j)
               ;; Find this point in the local map.  Subtract global point from the
               ;; local neighborhood and take norm square.
               (min-dist-sq-0 (double-inf))
@@ -414,50 +409,52 @@
                   ((-int-) j)
                   (let* ((i-pt (+ i window-dim))
                          (j-pt (+ j window-dim))
-                         (fm-lcl-neigh-pt (select (select fm-lcl-feat-neigh 1 i-pt) 1 j-pt))
-                         (fm-lcl-mask-pt (select (select fm-lcl-masks-neigh 1 i-pt) 1 j-pt)))
+                         (fm-gbl-neigh-pt (select (select fm-gbl-feat-neigh 1 i-pt) 1 j-pt))
+                         (fm-gbl-mask-pt (select (select fm-gbl-mask-neigh 0 i-pt) 0 j-pt)))
                     ;; Make sure masked.
-                    (when (<> 0 (fm-lcl-mask-pt 1))
+                    (when (<> 0 (fm-gbl-mask-pt))
                       (incr masked-pts)
                       ;; See if closest match.
-                      (idx-sub fm-gbl-feat-pt fm-lcl-neigh-pt diff-tmp)
+                      (idx-sub fm-lcl-feat-pt fm-gbl-neigh-pt diff-tmp)
                       (idx-m1dotm1 diff-tmp diff-tmp dist-sq)
                       (if (> (dist-sq) (min-dist-sq-0))
-                        (if (< (dist-sq) (min-dist-sq-1)) (min-dist-sq-1 (dist-sq)))
-                        (min-dist-sq-0 (dist-sq))
-                        (match-offset 0 i) (match-offset 1 j))))))
+                        (min-dist-sq-1 (min (dist-sq) (min-dist-sq-1)))
+                        (min-dist-sq-0 (dist-sq)) (match-offset 0 i) (match-offset 1 j))))))
               ;; Compute interest point and match coordinates.
-              (cell-src 0 i) (cell-src 1 j)
-              (idx-add cell-src match-offset cell-dst)
+              (cell-dst 0 i) (cell-dst 1 j)
+              (idx-add cell-dst match-offset cell-src)
               ;; We have a match when the second closest far enough from the first and when
               ;; the closest is close enough.
 ;;              (printf "closest / 2nd-closest = %f\n" (/ (min-dist-sq-0) (min-dist-sq-1)))
-              (if (or (or (= masked-pts 0) (>= (/ (min-dist-sq-0) (min-dist-sq-1)) match-pt-thresh))
-                      (> (/ (min-dist-sq-0) (fm-gbl-feat-pt-norm-sq)) interest-pt-thresh))
-                (progn (img-dispar-match 2 128) (img-dispar (cell-dst 0) (cell-dst 1) 0 128)
-                  ;;(printf "no match : closest = %f, 2nd = %f\n" (min-dist-sq-0) (min-dist-sq-1))
-                  )
-                (img-dispar-match 1 255)
-                (img-dispar (cell-dst 0) (cell-dst 1) 0 255)
-;;                (pretty fm-gbl-feat-pt)
-;;                (pretty fm-gbl-pt)
-;;                (pretty (select (select fm-lcl-feat 0 (cell-dst 0)) 0 (cell-dst 1)))
-;;                (printf "closest (%d,%d) = %f\n" (match-offset 0) (match-offset 1) (min-dist-sq-0))
-                (==> fm-lcl map-cell2world cell-src world-cell-tmp)
-                (idx-copy world-cell-tmp (select px-correspond-gbl 0 num-matched))
-                (==> fm-lcl map-cell2world cell-dst world-cell-tmp)
-                (idx-copy world-cell-tmp (select px-correspond-lcl 0 num-matched))
-                (incr num-matched))))
+              (when (> masked-pts window-dim)
+                (if (>= (/ (min-dist-sq-0) (min-dist-sq-1)) match-pt-thresh)
+;;                        (< (/ (min-dist-sq-1) (fm-gbl-feat-pt-norm-sq)) interest-pt-thresh))
+                  (progn (img-dispar (cell-src 0) (cell-src 1) 1 96)
+                         (img-dispar (cell-dst 0) (cell-dst 1) 0 96)
+;;                    (printf "no match : closest = %f, 2nd = %f\n" (min-dist-sq-0) (min-dist-sq-1))
+                    )
+;;                  (printf "cell-src = (%d, %d), cell-dst = (%d, %d)\n"
+;;                          (cell-src 0) (cell-src 1) (cell-dst 0) (cell-dst 1))
+                  (img-dispar (cell-src 0) (cell-src 1) 1 255)
+                  (img-dispar (cell-dst 0) (cell-dst 1) 0 255)
+;;                  (pretty fm-gbl-feat-pt)
+;;                  (pretty (select (select fm-lcl-feat 0 (cell-dst 0)) 0 (cell-dst 1)))
+;;                  (printf "closest (%d,%d) = %f\n" (match-offset 0) (match-offset 1) (min-dist-sq-0))
+                  (==> fm-lcl map-cell2world cell-src world-cell-tmp)
+                  (idx-d2resize px-correspond-gbl (+ num-matched 1) 2)
+                  (idx-copy world-cell-tmp (select px-correspond-gbl 0 num-matched))
+                  (==> fm-lcl map-cell2world cell-dst world-cell-tmp)
+                  (idx-d2resize px-correspond-lcl (+ num-matched 1) 2)
+                  (idx-copy world-cell-tmp (select px-correspond-lcl 0 num-matched))
+                  (incr num-matched)))))
           (incr j))
         (incr i))
-;;      (rgb-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) img-dispar-match 1 1)
       ;; Perform registration between maps when there are enough point correspondences.
       (if (>= num-matched 6)
         (let ((rot-d (double-matrix-nc 2 2))
               (offset-d (double-matrix-nc 2)))
           (printf "There were %d point correspondences\n" num-matched) 
-          (map-registration (narrow px-correspond-gbl 0 num-matched 0)
-                            (narrow px-correspond-lcl 0 num-matched 0) rot-d offset-d)
+          (map-registration px-correspond-gbl px-correspond-lcl rot-d offset-d)
           (idx-copy rot-d rot)
           (idx-copy offset-d (narrow offset 0 2 0)) (offset 0 0)))
       num-matched))
@@ -538,7 +535,7 @@
 ;;  (==> tb start-sub-odom)
   ;; Create feature, cost, and cost rgb maps.
   (let* ((scale [f 0.06 0.06])
-         (fm-global (new feature-map [i 200 200] scale (+ @FEATURE_MAP_IDX_COUNT 1)))
+         (fm-global (new feature-map [i 300 300] scale (+ @FEATURE_MAP_IDX_COUNT 1)))
          (cm-global ())
          (cm-global-rgb ())
          (fm-local (new feature-map [i 80 80] scale @FEATURE_MAP_IDX_COUNT))
@@ -550,10 +547,22 @@
          (tform-odom-correct (float-matrix 4 4))
          (tform-odom-corrected (float-matrix 4 4))
          (tform-full (float-matrix 4 4))
+         (tform-odom-correct-upd (float-matrix 4 4))
+         (tform-odom-correct-upd-rot (narrow (narrow tform-odom-correct-upd 0 2 0) 1 2 0))
+         (tform-odom-correct-upd-trans (select (narrow tform-odom-correct-upd 0 3 0) 1 3))
+         (num-matched 0)
          (odom-orien (float-matrix 4))
-         (odom-pos (float-matrix 3)))
+         (odom-pos (float-matrix 3))
+         (fm-gbl-feat (float-matrix-nc 1 1 1))
+         (fm-lcl-feat (float-matrix-nc 1 1 1))
+         (px-correspond-gbl (double-matrix-nc 1 2))
+         (px-correspond-lcl (double-matrix-nc 1 2))
+         (img-dispar (ubyte-matrix-nc (:fm-local:full-dim 0) (:fm-local:full-dim 1) 3)))
+
+    ((-int-) num-matched)
+
     (for (i 0 3) (tform-odom-correct i i 1))
-    (idx-f2fill (select :fm-global:data 2 @FEATURE_MAP_IDX_COUNT) (- (infinity)))
+    (idx-f2fill (select :fm-global:data 2 @FEATURE_MAP_IDX_COUNT) (- (float-inf)))
     ;; Setup cost maps.
     (idx-copy :fm-global:half-dim :fm-global:center)
     (setq cm-global (new cost-map fm-global))
@@ -575,7 +584,6 @@
 ;;      (while (< (==> tb update-odom) 0) ())
       (while (< (==> tb update-camera-depth-points) 0) ())
       (while (< (==> tb update-camera-rgb-image-color) 0) ())
-      ;; Convert points to feature map.
       ;; Update transform using odometry.
 ;;        (idx-copy :tb:odom-pose-position odom-pos)
 ;;        (idx-copy :tb:odom-pose-orientation odom-orien)
@@ -589,49 +597,52 @@
                    (select (narrow tform-odom 0 3 0) 1 3))
       (tform-odom 3 3 1)
 ;;        (printf "tform-odom\n") (pretty tform-odom)
-      ;; Correct the odometry using the last correction factor.
-      (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
+    ;; Correct the odometry using the last correction factor.
+    (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
+    ;; Get robot world position in map coordinates.
+    (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
+    ;; Compute local map using current odometry guess.
+    (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
+                            tform-odom-corrected turtlebot-c2v fm-global fm-local)
+    ;; Register feature maps using visual odometry.
+    (for (i 0 1)
+      (idx-clear tform-odom-correct-upd)
+      (for (i 0 3) (tform-odom-correct-upd i i 1))
+      (idx-clear img-dispar)
+      (setq num-matched (fm-local-registration fm-local fm-global fm-global-cell
+                                               fm-gbl-feat fm-lcl-feat
+                                               px-correspond-gbl px-correspond-lcl
+                                               tform-odom-correct-upd-rot
+                                               tform-odom-correct-upd-trans (- 5 (* 2 i)) img-dispar))
+      (rgb-draw-matrix (:fm-global:full-dim 1) (:fm-local:full-dim 0) img-dispar 1 1)
+      (when (> num-matched 0)
+        ;; Update odometry correction transformation by adding the current one.
+        (progn
+          (idx-copy tform-odom-correct tform-odom-corrected)
+          (idx-m2timesm2 tform-odom-correct-upd tform-odom-corrected tform-odom-correct))
+;;        (printf "upd-trans\n")(pretty tform-odom-correct-upd-trans)
+;;        (printf "upd-rot cos(theta) : %0.5f\n" (tform-odom-correct-upd-rot 0 0))
+;;        (printf "upd-rot sin(theta) : %0.5f\n" (tform-odom-correct-upd-rot 1 0))
+        ;; Correct the odometry using the new correction factor.
+        (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
+        ;; Get robot world position in map coordinates.
+        (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
+        ;; Compute local map using current odometry guess.
+        (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
+                                tform-odom-corrected turtlebot-c2v fm-global fm-local)))
       (printf "tform-odom-correct\n") (pretty tform-odom-correct)
       (printf "cos(theta) : %0.5f\n" (tform-odom-correct 0 0))
       (printf "sin(theta) : %0.5f\n" (tform-odom-correct 1 0))
-      ;; Get robot world position in map coordinates.
-      (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
-      ;; Compute local map using current odometry guess.
-      (for (i 0 2)
-        (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
-                                tform-odom-corrected turtlebot-c2v fm-global fm-local)
-        ;; Register feature maps using visual odometry.
-        (let* ((tform-odom-correct-upd (float-matrix 4 4))
-               (tform-odom-correct-upd-rot (narrow (narrow tform-odom-correct-upd 0 2 0) 1 2 0))
-               (tform-odom-correct-upd-trans (select (narrow tform-odom-correct-upd 0 3 0) 1 3))
-               (num-matched 0))
-          (for (i 0 3) (tform-odom-correct-upd i i 1))
-          (setq num-matched (fm-local-registration fm-local fm-global fm-global-cell
-                                                   tform-odom-correct-upd-rot
-                                                   tform-odom-correct-upd-trans (- 5 (* 2 i))))
-          (when (> num-matched 0)
-            ;; Update odometry correction transformation by adding the current one.
-            (progn
-              (idx-copy tform-odom-correct tform-odom-corrected)
-              (idx-m2timesm2 tform-odom-correct-upd tform-odom-corrected tform-odom-correct))
-            ;; Correct the odometry using the new correction factor.
-            (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
-  ;;            (printf "tform-odom-corrected\n") (pretty tform-odom-corrected)
-            ;; Get robot world position in map coordinates.
-            (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
-            ;; Compute local map using current odometry guess.
-            (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
-                                    tform-odom-corrected turtlebot-c2v fm-global fm-local))))
-    (progn (feature-map2cost-map :fm-local:data :cm-local:data)
-           (setq :cm-local:pcl-density :fm-local:pcl-density))
-    ;; Update global map (with cost map rgb optimizations).
-    (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr get))
-    ;; Prepare for display.
-    (cost-map2rgb 1.0 cm-global cm-global-rgb)
-    (cost-map2rgb 1.0 cm-local cm-local-rgb)
-    ;; Draw maps.
-    (rgb-draw-matrix 0 0 cm-global-rgb 1 1)
-    (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1))))
+      (progn (feature-map2cost-map :fm-local:data :cm-local:data)
+             (setq :cm-local:pcl-density :fm-local:pcl-density))
+      ;; Update global map (with cost map rgb optimizations).
+      (fm-global-update fm-global cm-global cm-global-rgb fm-global-cell fm-local (==> tmr get))
+      ;; Prepare for display.
+      (cost-map2rgb 1 cm-global cm-global-rgb)
+      (cost-map2rgb 1 cm-local cm-local-rgb)
+      ;; Draw maps.
+      (rgb-draw-matrix 0 0 cm-global-rgb 1 1)
+      (rgb-draw-matrix (idx-dim cm-global-rgb 1) 0 cm-local-rgb 1 1))))
 
 ;;(let ((dhc-make-lushflags (concat dhc-make-lushflags " -fopenmp")))
   (dhc-make-with-c++ () () ;;"/usr/lib/gcc/i486-linux-gnu/4.4/libgomp.so"

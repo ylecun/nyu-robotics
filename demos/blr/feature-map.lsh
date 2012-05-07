@@ -155,19 +155,18 @@
 (defconstant "FEATURE_MAP_SUM_HT"            1)
 (defconstant "FEATURE_MAP_SUM_HT_SQ"         2)
 ;; Height histogram features.
-(defconstant "FEATURE_MAP_NUM_HT_BIN_0"      3)
-(defconstant "FEATURE_MAP_NUM_HT_BIN_1"      4)
-(defconstant "FEATURE_MAP_NUM_HT_BIN_2"      5)
-(defconstant "FEATURE_MAP_NUM_HT_BIN_3"      6)
-(defconstant "FEATURE_MAP_NUM_HT_BIN_4"      7)
+(defconstant "FEATURE_MAP_HT_BIN_COUNT"     10)
+(defconstant "FEATURE_MAP_NUM_HT_BIN_BEGIN"  (+ @FEATURE_MAP_SUM_HT_SQ 1))
+(defconstant "FEATURE_MAP_NUM_HT_BIN_END"   
+  (+ @FEATURE_MAP_NUM_HT_BIN_BEGIN @FEATURE_MAP_HT_BIN_COUNT))
 ;; RGB median.
-(defconstant "FEATURE_MAP_RGB_MEDIAN_BEGIN" 8)
-(defconstant "FEATURE_MAP_RGB_MEDIAN_END"  19)
+(defconstant "FEATURE_MAP_RGB_MEDIAN_BEGIN"  @FEATURE_MAP_NUM_HT_BIN_END)
+(defconstant "FEATURE_MAP_RGB_MEDIAN_END" 
+  (+ @FEATURE_MAP_RGB_MEDIAN_BEGIN (* 3 @FEATURE_MAP_HT_BIN_COUNT)))
 ;;
-(defconstant "FEATURE_MAP_IDX_COUNT"       23)
-(defconstant "FEATURE_MAP_HT_BIN_COUNT"     5)
-(defconstant "FEATURE_MAP_HT_BIN_CM"       30)
-(defconstant "FEATURE_MAP_RGB_MEDIAN_ITER"  4)
+(defconstant "FEATURE_MAP_IDX_COUNT"        @FEATURE_MAP_RGB_MEDIAN_END)
+(defconstant "FEATURE_MAP_HT_BIN_CM"        18)
+(defconstant "FEATURE_MAP_RGB_MEDIAN_ITER"  15)
 #?  (xyzrgb2feature-map <xyz> <rgb> <transform> <fm>)
 ;; Fill in feature map for each map cell using the point cloud <xyz>
 ;;   Features:
@@ -192,7 +191,7 @@
          (rgb-binned (ubyte-matrix-nc 1 3))
          (fm-data :fm:data)
          (ht-bin-cm (/ @FEATURE_MAP_HT_BIN_CM 100.0))
-         (ht-bin-base-idx @FEATURE_MAP_NUM_HT_BIN_0)
+         (ht-bin-base-idx @FEATURE_MAP_NUM_HT_BIN_BEGIN)
          (ht-bin-max-offset (- @FEATURE_MAP_HT_BIN_COUNT 1))
          (rgb-bin-base-idx @FEATURE_MAP_RGB_MEDIAN_BEGIN)
          (m (float-matrix-nc 3))
@@ -249,6 +248,7 @@
          const int fm_p0 = $fm_data->mod[0];
          const int fm_p1 = $fm_data->mod[1];
          const int fm_p2 = $fm_data->mod[2];
+         const float color_scale = 1.0f / 255.0f;
          // Setup iteration over map cells.
          std::vector<RgbBinRecord>::const_iterator rec = rgbBinRecords.begin();
          const std::vector<RgbBinRecord>::const_iterator recEnd = rgbBinRecords.end();
@@ -259,6 +259,7 @@
          // Get pointer to first pixel.
          float* fm_cell = fm_data + (fm_p0 * fm_r) + (fm_p1 * fm_c);
          int bin_size = static_cast<int>(fm_cell[fm_p2 * ($ht_bin_base_idx + keyCellBin)] + 0.5f);
+         float bin_size_scale = 1.0f / bin_size;
 //         printf("(r, c) = (%d, %d), bin = %d\n", fm_r, fm_c, keyCellBin);
 //         printf("bin_size_offset = %d\n", $ht_bin_base_idx + keyCellBin);
 //         printf("fm_cell = ( ");
@@ -283,7 +284,8 @@
            {
 //             printf("**new bin: keyMapCell = %d, keyCellBin = %d\n", keyMapCell, keyCellBin);
              // Compute mean.
-             m[0] /= bin_size; m[1] /= bin_size; m[2] /= bin_size;
+             m[0] *= bin_size_scale; m[1] *= bin_size_scale; m[2] *= bin_size_scale;
+//             printf("mean = (%f, %f, %f)\n", m[0], m[1], m[2]);
              // Process median.
              #}
 ;;             (printf "(idx-dim rgb-binned) = (%d %d)\n"
@@ -292,6 +294,7 @@
 ;;               (printf "(%d, %d, %d)\n" (rgb-binned 0)(rgb-binned 1)(rgb-binned 2)))
              (median-rgb rgb-binned @FEATURE_MAP_RGB_MEDIAN_ITER m)
              #{
+             m[0] *= color_scale; m[1] *= color_scale; m[2] *= color_scale;
              float* const fm_cell_rgb_bin = fm_cell + $rgb_bin_base_idx + (3 * keyCellBin);
              memcpy(fm_cell_rgb_bin, IDX_PTR($m, float), 3 * sizeof(float));
              // Setup for next bin.
@@ -301,6 +304,7 @@
              fm_c = keyMapCell >>  8 & 0xFFF;
              fm_cell = fm_data + (fm_p0 * fm_r) + (fm_p1 * fm_c);
              bin_size = static_cast<int>(fm_cell[fm_p2 * ($ht_bin_base_idx + keyCellBin)] + 0.5f);
+             bin_size_scale = 1.0f / bin_size;
              Midx_init_dim2($rgb_binned, bin_size, 3);
              rgb_binned = IDX_PTR($rgb_binned, unsigned char);
              memset(m, 0, 3 * sizeof(float));
@@ -313,8 +317,9 @@
          // Median one more time for the final homies in the buffer.
          {
            // Compute mean.
-           m[0] /= bin_size; m[1] /= bin_size; m[2] /= bin_size;
+           m[0] *= bin_size_scale; m[1] *= bin_size_scale; m[2] *= bin_size_scale;
            #} (median-rgb rgb-binned @FEATURE_MAP_RGB_MEDIAN_ITER m) #{
+           m[0] *= color_scale; m[1] *= color_scale; m[2] *= color_scale;
            float* const fm_cell_rgb_bin = fm_cell + $rgb_bin_base_idx + (3 * keyCellBin);
            memcpy(fm_cell_rgb_bin, IDX_PTR($m, float), 3 * sizeof(float));
          }
