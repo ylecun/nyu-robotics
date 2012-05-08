@@ -155,7 +155,7 @@
 (defconstant "FEATURE_MAP_SUM_HT"            1)
 (defconstant "FEATURE_MAP_SUM_HT_SQ"         2)
 ;; Height histogram features.
-(defconstant "FEATURE_MAP_HT_BIN_COUNT"     10)
+(defconstant "FEATURE_MAP_HT_BIN_COUNT"     15)
 (defconstant "FEATURE_MAP_NUM_HT_BIN_BEGIN"  (+ @FEATURE_MAP_SUM_HT_SQ 1))
 (defconstant "FEATURE_MAP_NUM_HT_BIN_END"   
   (+ @FEATURE_MAP_NUM_HT_BIN_BEGIN @FEATURE_MAP_HT_BIN_COUNT))
@@ -165,7 +165,7 @@
   (+ @FEATURE_MAP_RGB_MEDIAN_BEGIN (* 3 @FEATURE_MAP_HT_BIN_COUNT)))
 ;;
 (defconstant "FEATURE_MAP_IDX_COUNT"        @FEATURE_MAP_RGB_MEDIAN_END)
-(defconstant "FEATURE_MAP_HT_BIN_CM"        18)
+(defconstant "FEATURE_MAP_HT_BIN_CM"        12)
 (defconstant "FEATURE_MAP_RGB_MEDIAN_ITER"  15)
 #?  (xyzrgb2feature-map <xyz> <rgb> <transform> <fm>)
 ;; Fill in feature map for each map cell using the point cloud <xyz>

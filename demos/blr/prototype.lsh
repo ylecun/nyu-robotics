@@ -322,10 +322,10 @@
 
            ;; Ratio of distance to closest point in global window to norm of
            ;; the global point. Smaller is more permissive.
-           (interest-pt-thresh (* 0.3 0.3))
+           (interest-pt-thresh (* 0.50 0.50))
            ;; Ratio of closest distance to next-closest distance in local
            ;; window. Larger is more permissive.
-           (match-pt-thresh (* 0.80 0.80))
+           (match-pt-thresh (* 0.60 0.60))
 
            (i window-dim) ;; Local map coordinate.
            (j window-dim) ;; Local map coordinate.
@@ -531,14 +531,14 @@
 (de xyz2global-feature-map-test (tb n)
   (==> tb start-sub-camera-depth-points)
   (==> tb start-sub-camera-rgb-image-color)
-;;  (==> tb start-sub-robot-pose-ekf)
+  (==> tb start-sub-robot-pose-ekf)
 ;;  (==> tb start-sub-odom)
   ;; Create feature, cost, and cost rgb maps.
-  (let* ((scale [f 0.06 0.06])
-         (fm-global (new feature-map [i 300 300] scale (+ @FEATURE_MAP_IDX_COUNT 1)))
+  (let* ((scale [f 0.10 0.10])
+         (fm-global (new feature-map [i 150 150] scale (+ @FEATURE_MAP_IDX_COUNT 1)))
          (cm-global ())
          (cm-global-rgb ())
-         (fm-local (new feature-map [i 80 80] scale @FEATURE_MAP_IDX_COUNT))
+         (fm-local (new feature-map [i 65 65] scale @FEATURE_MAP_IDX_COUNT))
          (cm-local ())
          (cm-local-rgb ())
          (fm-global-cell (int-matrix-nc 2))
@@ -580,18 +580,20 @@
     ;; Do n loops of processing.
     (for (i 0 (- n 1))
       ;; Grab new data.
-;;      (while (< (==> tb update-robot-pose-ekf) 0) ())
+      (while (< (==> tb update-robot-pose-ekf) 0) ())
 ;;      (while (< (==> tb update-odom) 0) ())
       (while (< (==> tb update-camera-depth-points) 0) ())
       (while (< (==> tb update-camera-rgb-image-color) 0) ())
       ;; Update transform using odometry.
-;;        (idx-copy :tb:odom-pose-position odom-pos)
-;;        (idx-copy :tb:odom-pose-orientation odom-orien)
+;;      (idx-copy :tb:odom-pose-position odom-pos)
+;;      (idx-copy :tb:odom-pose-orientation odom-orien)
       (idx-copy :tb:robot-pose-ekf-position odom-pos)
       (idx-copy :tb:robot-pose-ekf-orientation odom-orien)
       ;; Flip the angle (invert).
       (odom-orien 3 (- (odom-orien 3)))
       (quaternion2matrix odom-orien tform-odom)
+      (printf "odom-orien cos(theta) : %f\n" (tform-odom 0 0))
+      (printf "odom-orien sin(theta) : %f\n" (tform-odom 1 0))
       ;; Apply orientation to the position.
       (idx-m2dotm1 (narrow (narrow tform-odom 0 3 0) 1 3 0) odom-pos
                    (select (narrow tform-odom 0 3 0) 1 3))
@@ -605,7 +607,8 @@
     (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
                             tform-odom-corrected turtlebot-c2v fm-global fm-local)
     ;; Register feature maps using visual odometry.
-    (for (i 0 1)
+;;    (for (i 0 1)
+    (if (< 1 2) ()
       (idx-clear tform-odom-correct-upd)
       (for (i 0 3) (tform-odom-correct-upd i i 1))
       (idx-clear img-dispar)
@@ -613,7 +616,7 @@
                                                fm-gbl-feat fm-lcl-feat
                                                px-correspond-gbl px-correspond-lcl
                                                tform-odom-correct-upd-rot
-                                               tform-odom-correct-upd-trans (- 5 (* 2 i)) img-dispar))
+                                               tform-odom-correct-upd-trans (- 4 (* 2 i)) img-dispar))
       (rgb-draw-matrix (:fm-global:full-dim 1) (:fm-local:full-dim 0) img-dispar 1 1)
       (when (> num-matched 0)
         ;; Update odometry correction transformation by adding the current one.
