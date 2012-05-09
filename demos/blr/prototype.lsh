@@ -60,6 +60,7 @@
          (tform-full (float-matrix-nc 4 4))       ;; Robot local transform and base transform.
          (map-cell (int-matrix-nc 2))             ;; Target cell for xyz point.
          (xyz-tform (float-matrix-nc 3)))         ;; Transformed xyz point.
+;;         (img-dbg (ubyte-matrix-nc 1 1 3)))
     ;; Compute map cell for robot position in global map.
     (==> fm-global world2map-cell (narrow (select tform-gbl 1 3) 0 3 0) global-cell)
     ;; Get pixel center for global-cell in world coordinates.
@@ -71,7 +72,8 @@
       (idx-sub tform-lcl-trans global-cell-world tform-lcl-trans))
     ;; Apply camera to base link transform and compute map.
     (idx-m2timesm2 tform-lcl tform-base tform-full)
-    (xyzrgb2feature-map xyz rgb tform-full fm-local)))
+    (xyzrgb2feature-map xyz rgb tform-full fm-local))) ;;img-dbg)
+;;    (rgb-draw-matrix 520 0 img-dbg 1 1)))
 
 ;; Time to live for a feature observation.
 (defconstant "COST_MAP_GLOBAL_TTL_SECONDS" 120)
@@ -203,6 +205,7 @@
     (gray-draw-matrix (* scale img-dim) 0 img-erode 0 1 scale scale))
   ())
 
+(defconstant "FM_LCL_REGISTRATION_MIN_MATCHES" 15)
 ;; Resample a local feature map by solving a least squares optimization.
 (de fm-local-registration (fm-lcl fm-gbl fm-gbl-cell
                            fm-gbl-feat fm-lcl-feat
@@ -322,10 +325,10 @@
 
            ;; Ratio of distance to closest point in global window to norm of
            ;; the global point. Smaller is more permissive.
-           (interest-pt-thresh (* 0.50 0.50))
+           (interest-pt-thresh (* 0.40 0.40))
            ;; Ratio of closest distance to next-closest distance in local
            ;; window. Larger is more permissive.
-           (match-pt-thresh (* 0.60 0.60))
+           (match-pt-thresh (* 0.90 0.90))
 
            (i window-dim) ;; Local map coordinate.
            (j window-dim) ;; Local map coordinate.
@@ -450,10 +453,10 @@
           (incr j))
         (incr i))
       ;; Perform registration between maps when there are enough point correspondences.
-      (if (>= num-matched 6)
+      (printf "There were %d point correspondences\n" num-matched) 
+      (if (>= num-matched @FM_LCL_REGISTRATION_MIN_MATCHES)
         (let ((rot-d (double-matrix-nc 2 2))
               (offset-d (double-matrix-nc 2)))
-          (printf "There were %d point correspondences\n" num-matched) 
           (map-registration px-correspond-gbl px-correspond-lcl rot-d offset-d)
           (idx-copy rot-d rot)
           (idx-copy offset-d (narrow offset 0 2 0)) (offset 0 0)))
@@ -531,14 +534,14 @@
 (de xyz2global-feature-map-test (tb n)
   (==> tb start-sub-camera-depth-points)
   (==> tb start-sub-camera-rgb-image-color)
-  (==> tb start-sub-robot-pose-ekf)
+;;  (==> tb start-sub-robot-pose-ekf)
 ;;  (==> tb start-sub-odom)
   ;; Create feature, cost, and cost rgb maps.
-  (let* ((scale [f 0.10 0.10])
+  (let* ((scale [f 0.08 0.08])
          (fm-global (new feature-map [i 150 150] scale (+ @FEATURE_MAP_IDX_COUNT 1)))
          (cm-global ())
          (cm-global-rgb ())
-         (fm-local (new feature-map [i 65 65] scale @FEATURE_MAP_IDX_COUNT))
+         (fm-local (new feature-map [i 70 70] scale @FEATURE_MAP_IDX_COUNT))
          (cm-local ())
          (cm-local-rgb ())
          (fm-global-cell (int-matrix-nc 2))
@@ -580,10 +583,10 @@
     ;; Do n loops of processing.
     (for (i 0 (- n 1))
       ;; Grab new data.
-      (while (< (==> tb update-robot-pose-ekf) 0) ())
-;;      (while (< (==> tb update-odom) 0) ())
       (while (< (==> tb update-camera-depth-points) 0) ())
       (while (< (==> tb update-camera-rgb-image-color) 0) ())
+;;      (while (< (==> tb update-robot-pose-ekf) 0) ())
+;;      (while (< (==> tb update-odom) 0) ())
       ;; Update transform using odometry.
 ;;      (idx-copy :tb:odom-pose-position odom-pos)
 ;;      (idx-copy :tb:odom-pose-orientation odom-orien)
@@ -607,8 +610,8 @@
     (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
                             tform-odom-corrected turtlebot-c2v fm-global fm-local)
     ;; Register feature maps using visual odometry.
-;;    (for (i 0 1)
-    (if (< 1 2) ()
+    (for (i 0 1)
+;;    (if (< 1 2) () ;; Disable registration (odom only).
       (idx-clear tform-odom-correct-upd)
       (for (i 0 3) (tform-odom-correct-upd i i 1))
       (idx-clear img-dispar)
@@ -633,7 +636,8 @@
         ;; Compute local map using current odometry guess.
         (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
                                 tform-odom-corrected turtlebot-c2v fm-global fm-local)))
-      (printf "tform-odom-correct\n") (pretty tform-odom-correct)
+      (printf "tx         : %1.3f\n" (tform-odom-correct 0 3))
+      (printf "ty         : %1.3f\n" (tform-odom-correct 1 3))
       (printf "cos(theta) : %0.5f\n" (tform-odom-correct 0 0))
       (printf "sin(theta) : %0.5f\n" (tform-odom-correct 1 0))
       (progn (feature-map2cost-map :fm-local:data :cm-local:data)
