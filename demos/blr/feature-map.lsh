@@ -171,12 +171,135 @@
         (color-rgb 0 1 0)(fill-circle (+ (* 2 255) r) b 2))
       (pretty m))))
 
+;; Compute the mode rgb of an image using an optional downsampling.
+;; This function uses the fact that the median value is closest to all image
+;; samples in order to find the mode. It uses a technique similar to median cut
+;; when applied to color quanitization.
+(de mode-rgb-matrix (rgb downsample-shift median-window rgb-binned m)
+  ((-idx3- (-ubyte-)) rgb)
+  ((-int-) downsample-shift)
+  ((-int-) median-window)
+  ((-idx2- (-ubyte-)) rgb-binned)
+  ((-idx1- (-float-)) m)
+
+  (let* ((rgb-ds-r (bitshr (idx-dim rgb 0) downsample-shift))
+         (rgb-ds-c (bitshr (idx-dim rgb 1) downsample-shift))
+         (rgb-ds-size (* rgb-ds-r rgb-ds-c))
+         (r-raw 0)
+         (c-raw 0)
+         (r-ds 0)
+         (c-ds 0))
+    ((-int-) rgb-ds-r)
+    ((-int-) rgb-ds-c)
+    ((-int-) r-raw)
+    ((-int-) c-raw)
+    ((-int-) r-ds)
+    ((-int-) c-ds)
+
+    (idx-u2resize rgb-binned (* 2 rgb-ds-size) 3)
+    (let ((rgb-binned-pass-0 (narrow rgb-binned 0 rgb-ds-size 0))
+          (rgb-med-ds-r (int-matrix-nc rgb-ds-c 3))
+          (m-low (float-matrix-nc 3))
+          (m-hig (float-matrix-nc 3))
+          (rgb-tmp (float-matrix-nc 3))
+          (idx-low rgb-ds-size)
+          (idx-hig (- (* 2 rgb-ds-size) 1))
+          (bin-size-low 0)
+          (bin-size-mid 0)
+          (bin-size-hig 0))
+      ((-int-) rgb-ds-size)
+      ((-int-) idx-low)
+      ((-int-) idx-hig)
+      ((-int-) bin-size-low)
+      ((-int-) bin-size-mid)
+      ((-int-) bin-size-hig)
+
+      (idx-bloop ((rgb rgb))
+        (idx-clear rgb-med-ds-r)
+        (setq c-raw 0)(setq c-ds 0)
+        (idx-bloop ((rgb rgb))
+          ;; Compute median color for scene (to ignore it later).
+          (let ((rgb-scene (select rgb-med-ds-r 0 c-ds))) (idx-add rgb rgb-scene rgb-scene))
+          (incr c-raw) (setq c-ds (bitshr c-raw downsample-shift)))
+        ;; Row complete, copy to binned.
+        (idx-bloop ((rgb-scene rgb-med-ds-r)
+                    (rgb (narrow rgb-binned-pass-0 0 rgb-ds-c (* r-ds rgb-ds-c))))
+;;                    (rgb-dbg (select img-dbg 0 r-ds)))
+          (rgb 0 (bitshr (rgb-scene 0) downsample-shift))
+          (rgb 1 (bitshr (rgb-scene 1) downsample-shift))
+          (rgb 2 (bitshr (rgb-scene 2) downsample-shift)))
+;;          (idx-copy rgb rgb-dbg))
+        (incr r-raw) (setq r-ds (bitshr r-raw downsample-shift)))
+      ;; Compute scene median.
+      (m 0 (rand 0 255))(m 1 (rand 0 255))(m 2 (rand 0 255))
+      (median-rgb rgb-binned-pass-0 15 m)
+      (idx-copy m m-low)
+      (idx-copy m m-hig)
+;;      (printf "first pass complete; median = (%f, %f, %f)\n" (m 0) (m 1) (m 2))
+      ;; Compute median of upper and lower bin. See which of the 3 medians has
+      ;; the largest number of nearby colors. For each point, see which bin it
+      ;; belongs to. Assume a fixed-size box around the first median.
+      (idx-bloop ((rgb-binned-src rgb-binned-pass-0))
+        (idx-copy rgb-binned-src rgb-tmp)
+        (idx-sub m rgb-tmp rgb-tmp)
+        (if (and (< (rgb-tmp 0) median-window)
+                 (< (rgb-tmp 1) median-window)
+                 (< (rgb-tmp 2) median-window))
+          (if (and (> (rgb-tmp 0) (- median-window))
+                   (> (rgb-tmp 1) (- median-window))
+                   (> (rgb-tmp 2) (- median-window)))
+            (incr bin-size-mid)
+            ;; Else its in the high bin.
+            (idx-copy rgb-binned-src (select rgb-binned 0 idx-hig))
+            (incr idx-hig -1)
+            (incr bin-size-hig))
+          ;; Else its in the low bin.
+          (idx-copy rgb-binned-src (select rgb-binned 0 idx-low))
+          (incr idx-low)
+          (incr bin-size-low)))
+;;      (printf "binning complete; bin-size-low = %d, bin-size-hig = %d\n"
+;;              bin-size-low bin-size-hig)
+      ;; Compute median for low, high bins.
+      (when (> bin-size-low 0)
+        (let ((rgb-binned (narrow rgb-binned 0 bin-size-low rgb-ds-size)))
+          (setq bin-size-low 0)
+          (median-rgb rgb-binned 15 m-low)
+          (idx-bloop ((rgb-binned rgb-binned))
+            (idx-copy rgb-binned rgb-tmp)
+            (idx-sub m-low rgb-tmp rgb-tmp)
+            (when (and (< (rgb-tmp 0) median-window)
+                       (< (rgb-tmp 1) median-window)
+                       (< (rgb-tmp 2) median-window) 
+                       (> (rgb-tmp 0) (- median-window))
+                       (> (rgb-tmp 1) (- median-window))
+                       (> (rgb-tmp 2) (- median-window)))
+              (incr bin-size-low)))))
+      (when (> bin-size-hig 0)
+        (let ((rgb-binned (narrow rgb-binned 0 bin-size-hig (+ idx-hig 1))))
+          (setq bin-size-hig 0)
+          (median-rgb rgb-binned 15 m-hig)
+          (idx-bloop ((rgb-binned rgb-binned))
+            (idx-copy rgb-binned rgb-tmp)
+            (idx-sub m-hig rgb-tmp rgb-tmp)
+            (when (and (< (rgb-tmp 0) median-window)
+                       (< (rgb-tmp 1) median-window)
+                       (< (rgb-tmp 2) median-window) 
+                       (> (rgb-tmp 0) (- median-window))
+                       (> (rgb-tmp 1) (- median-window))
+                       (> (rgb-tmp 2) (- median-window)))
+              (incr bin-size-hig)))))
+      ;; Check for the largest bin.
+      (if (> bin-size-low bin-size-hig)
+        (when (> bin-size-low bin-size-mid) (idx-copy m-low m))
+        (when (> bin-size-hig bin-size-mid) (idx-copy m-hig m)))))
+  m)
+
 ;; Height mean and variance features.
 (defconstant "FEATURE_MAP_NUM_PTS"           0)
 (defconstant "FEATURE_MAP_SUM_HT"            1)
 (defconstant "FEATURE_MAP_SUM_HT_SQ"         2)
 ;; Height histogram features.
-(defconstant "FEATURE_MAP_HT_BIN_COUNT"     15)
+(defconstant "FEATURE_MAP_HT_BIN_COUNT"     20)
 (defconstant "FEATURE_MAP_NUM_HT_BIN_BEGIN"  (+ @FEATURE_MAP_SUM_HT_SQ 1))
 (defconstant "FEATURE_MAP_NUM_HT_BIN_END"   
   (+ @FEATURE_MAP_NUM_HT_BIN_BEGIN @FEATURE_MAP_HT_BIN_COUNT))
@@ -186,19 +309,20 @@
   (+ @FEATURE_MAP_RGB_MEDIAN_BEGIN (* 3 @FEATURE_MAP_HT_BIN_COUNT)))
 ;;
 (defconstant "FEATURE_MAP_IDX_COUNT"        @FEATURE_MAP_RGB_MEDIAN_END)
-(defconstant "FEATURE_MAP_HT_BIN_CM"        12)
+(defconstant "FEATURE_MAP_HT_BIN_CM"        10)
 (defconstant "FEATURE_MAP_RGB_MEDIAN_ITER"   8)
-(defconstant "FEATURE_MAP_RGB_DS_SHR_BITS"   3)
-#?  (xyzrgb2feature-map <xyz> <rgb> <transform> <fm>)
+#?  (xyzrgb2feature-map <xyz> <rgb> <rgb-suppress> <rgb-suppress-wnd> <transform> <fm>)
 ;; Fill in feature map for each map cell using the point cloud <xyz>
 ;;   Features:
 ;;   [0] - Number of points.
 ;;   [1] - Sum of heights.
 ;;   [2] - Sum of squared heights.
 ;;   [3] - Sum of squared heights.
-(de xyzrgb2feature-map (xyz rgb transform fm) ;;img-dbg)
+(de xyzrgb2feature-map (xyz rgb rgb-suppress rgb-suppress-wnd transform fm) ;;img-dbg)
   ((-idx3- (-float-)) xyz)
   ((-idx3- (-ubyte-)) rgb)
+  ((-idx1- (-float-)) rgb-suppress)
+  ((-int-) rgb-suppress-wnd)
   ((-idx2- (-float-)) transform)
 ;;  ((-idx3- (-ubyte-)) img-dbg)
   ((-obj- (feature-map)) fm)
@@ -211,27 +335,18 @@
          (xyz-tform (float-matrix-nc 3))  ;; Transformed xyz point.
          (tform-rot (narrow (narrow transform 0 3 0) 1 3 0))
          (tform-trans (select (narrow transform 0 3 0) 1 3))
-         (rgb-ds-r (bitshr (idx-dim rgb 0) @FEATURE_MAP_RGB_DS_SHR_BITS))
-         (rgb-ds-c (bitshr (idx-dim rgb 1) @FEATURE_MAP_RGB_DS_SHR_BITS))
-         (rgb-scene-med-r (int-matrix-nc rgb-ds-c 3))
-         (rgb-binned (ubyte-matrix-nc (* rgb-ds-r rgb-ds-c) 3))
+         (rgb-binned (ubyte-matrix-nc 1 3))
          (fm-data :fm:data)
          (ht-bin-cm (/ @FEATURE_MAP_HT_BIN_CM 100.0))
          (ht-bin-base-idx @FEATURE_MAP_NUM_HT_BIN_BEGIN)
          (ht-bin-max-offset (- @FEATURE_MAP_HT_BIN_COUNT 1))
          (rgb-bin-base-idx @FEATURE_MAP_RGB_MEDIAN_BEGIN)
          (m (float-matrix 3))
-         (r-raw 0) (r-ds 0)
-         (c-raw 0) (c-ds 0)
          (xyz-count 0))
-    ((-int-) rgb-ds-r)
-    ((-int-) rgb-ds-c)
     ((-float-) ht-bin-cm)
     ((-int-) ht-bin-base-idx)
     ((-int-) ht-bin-max-offset)
     ((-int-) rgb-bin-base-idx)
-    ((-int-) r-raw) ((-int-) r-ds)
-    ((-int-) c-raw) ((-int-) c-ds)
     ((-int-) xyz-count)
 ;;    (printf "ht-bin-cm = %f, ht-bin-max-offset = %d\n" ht-bin-cm ht-bin-max-offset)
 ;;    (idx-u3resize img-dbg rgb-ds-r rgb-ds-c 3)
@@ -241,8 +356,6 @@
        std::vector<RgbBinRecord> rgbBinRecords; #}
     ;; For all point cloud points.
     (idx-bloop ((xyz (narrow xyz 2 3 0))(rgb rgb))
-      (idx-clear rgb-scene-med-r)
-      (setq c-raw 0)(setq c-ds 0)
       (idx-bloop ((xyz xyz)(rgb rgb))
         ;; Check not nan-tastic.
         (when (= 0 (to-int #{ std::isnan(*IDX_PTR($xyz, float)) #} ))
@@ -270,100 +383,20 @@
               (fm-pt ht-bin-idx (+ (fm-pt ht-bin-idx) 1))
               ;; Store pointer to RGB keyed by map cell and bin.
               #{ const uint32_t key = map_cell[0] << 20 | map_cell[1] << 8 | $ht_bin_offset;
-                 rgbBinRecords.push_back(std::make_pair(key, IDX_PTR($rgb, unsigned char))); #})))
-        ;; Compute median color for scene (to ignore it later).
-        (let ((rgb-scene (select rgb-scene-med-r 0 c-ds))) (idx-add rgb rgb-scene rgb-scene))
-        (incr c-raw) (setq c-ds (bitshr c-raw @FEATURE_MAP_RGB_DS_SHR_BITS)))
-      ;; Row complete, copy to binned.
-      (idx-bloop ((rgb-scene rgb-scene-med-r)
-                  (rgb (narrow rgb-binned 0 rgb-ds-c (* r-ds rgb-ds-c))))
-;;                  (rgb-dbg (select img-dbg 0 r-ds)))
-        (rgb 0 (bitshr (rgb-scene 0) @FEATURE_MAP_RGB_DS_SHR_BITS))
-        (rgb 1 (bitshr (rgb-scene 1) @FEATURE_MAP_RGB_DS_SHR_BITS))
-        (rgb 2 (bitshr (rgb-scene 2) @FEATURE_MAP_RGB_DS_SHR_BITS)))
-;;        (idx-copy rgb rgb-dbg))
-      (incr r-raw) (setq r-ds (bitshr r-raw @FEATURE_MAP_RGB_DS_SHR_BITS)))
-;;    (printf "xyzrgb2feature-map : complete first pass\n")
-    ;; Compute scene median.
-    (median-rgb rgb-binned 15 m)
-    ;; Compute median of upper and lower bin. See which of the 3 medians has
-    ;; the largest number of nearby colors.
-;;    (printf "xyzrgb2feature-map : starting median binning\n")
-    (let* ((bin-size-low 0)
-           (bin-size-mid 0)
-           (bin-size-hig 0)
-           (m-low (idx-copy m))
-           (m-hig (idx-copy m))
-           (rgb-tmp (float-matrix-nc 3))
-           (rgb-ds-size (* rgb-ds-r rgb-ds-c))
-           (idx-low rgb-ds-size)
-           (idx-hig (- (* 2 rgb-ds-size) 1)))
-      ((-int-) bin-size-low)
-      ((-int-) bin-size-mid)
-      ((-int-) bin-size-hig)
-      ((-int-) rgb-ds-size)
-      ((-int-) idx-low)
-      ((-int-) idx-hig)
-      (idx-u2resize rgb-binned (* 2 rgb-ds-size) 3)
-      ;; For each point, see which bin it belongs to. Assume a fixed-size
-      ;; box around the first median.
-      (idx-bloop ((rgb-binned-src (narrow rgb-binned 0 rgb-ds-size 0)))
-        (idx-copy rgb-binned-src rgb-tmp)
-        (idx-sub m rgb-tmp rgb-tmp)
-        (if (and (< (rgb-tmp 0) 10) (< (rgb-tmp 1) 10) (< (rgb-tmp 2) 10))
-          (if (and (> (rgb-tmp 0) -10) (> (rgb-tmp 1) -10) (> (rgb-tmp 2) -10))
-            (incr bin-size-mid)
-            ;; Else its in the high bin.
-            (idx-copy rgb-binned-src (select rgb-binned 0 idx-hig))
-            (incr idx-hig -1)
-            (incr bin-size-hig))
-          ;; Else its in the low bin.
-          (idx-copy rgb-binned-src (select rgb-binned 0 idx-low))
-          (incr idx-low)
-          (incr bin-size-low)))
-      ;; Compute median for low, high bins.
-      (when (> bin-size-low 0)
-        (let ((rgb-binned (narrow rgb-binned 0 bin-size-low rgb-ds-size)))
-          (setq bin-size-low 0)
-          (median-rgb rgb-binned 15 m-low)
-          (idx-bloop ((rgb-binned rgb-binned))
-            (idx-copy rgb-binned rgb-tmp)
-            (idx-sub m-low rgb-tmp rgb-tmp)
-            (when (and (< (rgb-tmp 0) 10) (< (rgb-tmp 1) 10) (< (rgb-tmp 2) 10) 
-                       (> (rgb-tmp 0) -10) (> (rgb-tmp 1) -10) (> (rgb-tmp 2) -10))
-              (incr bin-size-low)))))
-      (when (> bin-size-hig 0)
-        (let ((rgb-binned (narrow rgb-binned 0 bin-size-hig (+ idx-hig 1))))
-          (setq bin-size-hig 0)
-          (median-rgb rgb-binned 15 m-hig)
-          (idx-bloop ((rgb-binned rgb-binned))
-            (idx-copy rgb-binned rgb-tmp)
-            (idx-sub m-hig rgb-tmp rgb-tmp)
-            (when (and (< (rgb-tmp 0) 10) (< (rgb-tmp 1) 10) (< (rgb-tmp 2) 10) 
-                       (> (rgb-tmp 0) -10) (> (rgb-tmp 1) -10) (> (rgb-tmp 2) -10))
-              (incr bin-size-hig)))))
-;;      (printf "xyzrgb2feature-map : checking largest bin\n")
-      ;; Check for the largest bin.
-      (if (> bin-size-low bin-size-hig)
-        (when (> bin-size-low bin-size-mid) (idx-copy m-low m))
-        (when (> bin-size-hig bin-size-mid) (idx-copy m-hig m))))
-;;    (printf "xyzrgb2feature-map : found scene median\n")
+                 rgbBinRecords.push_back(std::make_pair(key, IDX_PTR($rgb, unsigned char))); #})))))
     ;; Sort binned rgb pixels and traverse image to compute median RGB.
     #{ if (!rgbBinRecords.empty())
        {
          // Store scene median.
-         float* m = IDX_PTR($m, float);
-         printf("scene_median = (%lf, %lf, %lf)\n", m[0], m[1], m[2]);
-         const uint8_t scene_median[3] = { static_cast<uint8_t>(m[0] + 0.5f),
-                                           static_cast<uint8_t>(m[1] + 0.5f),
-                                           static_cast<uint8_t>(m[2] + 0.5f), };
-//         const uint8_t scene_median[3] = {0};
-//         const int32_t scene_median[3] = {-100, -100, -100};
+         const float* const rgb_suppress_data = IDX_PTR($rgb_suppress, float);
+         const int rgb_suppress_wnd = $rgb_suppress_wnd;
+         const uint8_t rgb_suppress[3] = {static_cast<uint8_t>(rgb_suppress_data[0] + 0.5f),
+                                          static_cast<uint8_t>(rgb_suppress_data[1] + 0.5f),
+                                          static_cast<uint8_t>(rgb_suppress_data[2] + 0.5f),};
+         printf("rgb_suppress = (%d, %d, %d)\n", rgb_suppress[0], rgb_suppress[1], rgb_suppress[2]);
          const float color_scale = 1.0f / 255.0f;
          // Sort records in order of traversing map r, c.
          std::sort(rgbBinRecords.begin(), rgbBinRecords.end());
-//         const int rgbBinRecordsSize = static_cast<int>(rgbBinRecords.size());
-//         printf("rgbBinRecords.size() = %d\n", rgbBinRecordsSize);
          float* const fm_data = IDX_PTR($fm_data, float);
          const int fm_p0 = $fm_data->mod[0];
          const int fm_p1 = $fm_data->mod[1];
@@ -378,17 +411,10 @@
          // Get pointer to first pixel.
          float* fm_cell = fm_data + (fm_p0 * fm_r) + (fm_p1 * fm_c);
          int bin_size = static_cast<int>(fm_cell[fm_p2 * ($ht_bin_base_idx + keyCellBin)] + 0.5f);
-//         printf("(r, c) = (%d, %d), bin = %d\n", fm_r, fm_c, keyCellBin);
-//         printf("bin_size_offset = %d\n", $ht_bin_base_idx + keyCellBin);
-//         printf("fm_cell = ( ");
-//         for (int i = 0; i < 21; ++i)
-//         {
-//           printf("%f ", fm_cell[fm_p2 * i]);
-//         }
-//         printf("\n");
          // Initialize storage for median calculation.
          Midx_init_dim2($rgb_binned, bin_size, 3);
          unsigned char* rgb_binned = IDX_PTR($rgb_binned, unsigned char);
+         float* const m = IDX_PTR($m, float);
          memset(m, 0, 3 * sizeof(float));
          // For all rgb pixel records, map them into rgb_binned.
          int samples_count = 0;
@@ -413,7 +439,7 @@
              }
              else
              {
-               m[0] = scene_median[0]; m[1] = scene_median[1]; m[2] = scene_median[2];
+               m[0] = rgb_suppress[0]; m[1] = rgb_suppress[1]; m[2] = rgb_suppress[2];
              }
 //             printf("used %d of %d samples\n", samples_count, bin_size);
              float* const fm_cell_rgb_bin = fm_cell + $rgb_bin_base_idx + (3 * keyCellBin);
@@ -432,11 +458,11 @@
            }
            // Keep gathering rgb for the current bin.
 //           printf("(r, c) = (%d, %d), bin = %d\n", fm_r, fm_c, keyCellBin);
-           // See if not scene median.
+           // See if not suppressed.
            uint8_t* c = rec->second;
-           if ((abs(c[0] - scene_median[0]) > 10) ||
-               (abs(c[1] - scene_median[1]) > 10) ||
-               (abs(c[2] - scene_median[0]) > 10))
+           if ((abs(c[0] - rgb_suppress[0]) > rgb_suppress_wnd) ||
+               (abs(c[1] - rgb_suppress[1]) > rgb_suppress_wnd) ||
+               (abs(c[2] - rgb_suppress[0]) > rgb_suppress_wnd))
            {
              memcpy(rgb_binned, rec->second, 3);
              m[0] += c[0]; m[1] += c[1]; m[2] += c[2];
@@ -446,7 +472,7 @@
 //           {
 //             printf("tossed (%d, %d, %d) vs (%d %d %d)\n",
 //                    c[0], c[1], c[2],
-//                    scene_median[0], scene_median[1], scene_median[0]);
+//                    rgb_suppress[0], rgb_suppress[1], rgb_suppress[0]);
 //           }
          }
          // Median one more time for the final homies in the buffer.
@@ -461,7 +487,7 @@
            }
            else
            {
-             m[0] = scene_median[0]; m[1] = scene_median[1]; m[2] = scene_median[2];
+             m[0] = rgb_suppress[0]; m[1] = rgb_suppress[1]; m[2] = rgb_suppress[2];
            }
 //           printf("used %d of %d samples\n", samples_count, bin_size);
            m[0] *= color_scale; m[1] *= color_scale; m[2] *= color_scale;
@@ -649,6 +675,7 @@
   (cost-map
     cost-map)
   median-rgb
+  mode-rgb-matrix
   xyzrgb2feature-map
   feature-map2cost-map
   cost-map2rgb

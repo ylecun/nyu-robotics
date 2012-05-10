@@ -42,8 +42,11 @@
 ;; Uses the global map to orient the local map in global space. Points
 ;; are integrated only into the local map. After this process, the local
 ;; map is essentially a ROI in the global map as they are aligned.
-(de xyz2global-feature-map (xyz rgb tform-gbl tform-base fm-global fm-local)
+(de xyz2global-feature-map (xyz rgb rgb-suppress rgb-suppress-wnd
+                            tform-gbl tform-base fm-global fm-local)
   ((-idx3- (-float-)) xyz)
+  ((-idx1- (-float-)) rgb-suppress)
+  ((-int-) rgb-suppress-wnd)
   ((-idx3- (-ubyte-)) rgb)
   ((-idx2- (-float-)) tform-gbl)
   ((-idx2- (-float-)) tform-base)
@@ -72,7 +75,7 @@
       (idx-sub tform-lcl-trans global-cell-world tform-lcl-trans))
     ;; Apply camera to base link transform and compute map.
     (idx-m2timesm2 tform-lcl tform-base tform-full)
-    (xyzrgb2feature-map xyz rgb tform-full fm-local))) ;;img-dbg)
+    (xyzrgb2feature-map xyz rgb rgb-suppress rgb-suppress-wnd tform-full fm-local))) ;;img-dbg)
 ;;    (rgb-draw-matrix 520 0 img-dbg 1 1)))
 
 ;; Time to live for a feature observation.
@@ -205,7 +208,7 @@
     (gray-draw-matrix (* scale img-dim) 0 img-erode 0 1 scale scale))
   ())
 
-(defconstant "FM_LCL_REGISTRATION_MIN_MATCHES" 15)
+(defconstant "FM_LCL_REGISTRATION_MIN_MATCHES" 12)
 ;; Resample a local feature map by solving a least squares optimization.
 (de fm-local-registration (fm-lcl fm-gbl fm-gbl-cell
                            fm-gbl-feat fm-lcl-feat
@@ -325,10 +328,10 @@
 
            ;; Ratio of distance to closest point in global window to norm of
            ;; the global point. Smaller is more permissive.
-           (interest-pt-thresh (* 0.40 0.40))
+           (interest-pt-thresh (* 0.30 0.30))
            ;; Ratio of closest distance to next-closest distance in local
            ;; window. Larger is more permissive.
-           (match-pt-thresh (* 0.90 0.90))
+           (match-pt-thresh (* 0.60 0.60))
 
            (i window-dim) ;; Local map coordinate.
            (j window-dim) ;; Local map coordinate.
@@ -546,6 +549,9 @@
          (cm-local-rgb ())
          (fm-global-cell (int-matrix-nc 2))
          (tmr (new stopwatch))
+         (rgb-ds-samples (ubyte-matrix-nc 1 3))
+         (rgb-suppress (float-matrix 3))
+         (rgb-suppress-wnd 10)
          (tform-odom (float-matrix 4 4))
          (tform-odom-correct (float-matrix 4 4))
          (tform-odom-corrected (float-matrix 4 4))
@@ -606,8 +612,11 @@
     (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
     ;; Get robot world position in map coordinates.
     (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
+    ;; Compute scene mode to ignore a color.
+    (mode-rgb-matrix :tb:camera-rgb-image-color 3 10 rgb-ds-samples rgb-suppress)
     ;; Compute local map using current odometry guess.
     (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
+                            rgb-suppress rgb-suppress-wnd
                             tform-odom-corrected turtlebot-c2v fm-global fm-local)
     ;; Register feature maps using visual odometry.
     (for (i 0 1)
@@ -635,6 +644,7 @@
         (==> fm-global world2map-cell (select tform-odom-corrected 1 3) fm-global-cell)
         ;; Compute local map using current odometry guess.
         (xyz2global-feature-map :tb:camera-depth-points :tb:camera-rgb-image-color
+                                rgb-suppress rgb-suppress-wnd
                                 tform-odom-corrected turtlebot-c2v fm-global fm-local)))
       (printf "tx         : %1.3f\n" (tform-odom-correct 0 3))
       (printf "ty         : %1.3f\n" (tform-odom-correct 1 3))
