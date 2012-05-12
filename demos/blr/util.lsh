@@ -1,0 +1,139 @@
+(libload "../../lush/lsh/libimage/morpho")
+
+#? (double-inf)
+;; Compilable double-precision infinty.
+(de double-inf ()
+  (cheader "#include <limits>")
+  (to-double #{ std::numeric_limits<double>::infinity() #}))
+
+#? (float-inf)
+;; Compilable single-precision infinty.
+(de float-inf ()
+  (cheader "#include <limits>")
+  (to-float #{ std::numeric_limits<float>::infinity() #}))
+
+#? (quaternion2matrix <q> <m>)
+;; Convert a quaternion to a 3x3 rotation matrix.
+(de quaternion2matrix (q m)
+  ((-idx1- (-float-)) q)
+  ((-idx2- (-float-)) m)
+  (let ((qq (idx-mul q q)))
+    (m 0 0 (- (- (+ (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 1 1 (- (+ (- (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 2 2 (+ (- (- (qq 3) (qq 0)) (qq 1)) (qq 2)))
+    (m 0 1 (* 2 (- (* (q 0) (q 1)) (* (q 3) (q 2)))))
+    (m 0 2 (* 2 (+ (* (q 3) (q 1)) (* (q 0) (q 2)))))
+    (m 1 0 (* 2 (+ (* (q 0) (q 1)) (* (q 3) (q 2)))))
+    (m 1 2 (* 2 (- (* (q 1) (q 2)) (* (q 3) (q 0)))))
+    (m 2 0 (* 2 (- (* (q 0) (q 2)) (* (q 3) (q 1)))))
+    (m 2 1 (* 2 (+ (* (q 3) (q 0)) (* (q 1) (q 2))))))
+  m)
+
+;; Erode a ubyte matrix using a structuring element of 1 pixel. This
+;; is an optimized erosion that does not interpolate borders.
+;;
+;; Benchmarks on AMD E-350 APU machine:
+;; ? (setq img (ubyte-matrix 40 40))
+;; ? (setq img-erode (ubyte-matrix 40 40))
+;; ? (cputime (repeat 400000 (erode img img-erode)))
+;; = 8.11
+;; ? (cputime (repeat 400000 (erode img img-erode)))
+;; = 8.09
+;; ? (cputime (repeat 400000 (ubim-erosion img 1)))
+;; = 13.29
+;; ? (cputime (repeat 400000 (ubim-erosion img 1)))
+;; = 13.23
+;; ?
+(de erode (src dst)
+  ((-idx2- (-ubyte-)) src)
+  ((-idx2- (-ubyte-)) dst)
+  ;; Check sizes.
+  (let ((r (idx-dim src 0)) (c (idx-dim src 1)))
+    ((-int-) r) ((-int-) c)
+    (when (or (< r 3) (< c 3))
+      (error "insufficient source image size"))
+    (when (or (<> r (idx-dim dst 0)) (<> c (idx-dim dst 1)))
+      (error "insufficient destination image size"))
+    ;; Erode using column sums. Need solid 9x9.
+    (cpheader "#include <algorithm>")
+    (cpheader "#include <stdint.h>")
+    #{
+      {
+        uint8_t* const dst_begin = IDX_PTR($dst, uint8_t);
+        // Step through rows and columns. Need all sum of 9 to have a pixel.
+        const int rows = ($src)->dim[0];
+        const int cols = ($src)->dim[1];
+        const int row_steps = rows - 2;
+        const int col_steps = cols - 2;
+        const int row_mod = ($src)->mod[0];
+        const int col_mod = ($src)->mod[1];
+        const int plus_2_col = 2 * col_mod;
+        for (int r = 0; r < row_steps; ++r)
+        {
+          const uint8_t* src_r0 = (r * row_mod) + IDX_PTR($src, uint8_t);
+          const uint8_t* src_r1 = src_r0 + row_mod;
+          const uint8_t* src_r2 = src_r1 + row_mod;
+          uint8_t* dst_px = dst_begin + (r * row_mod) + col_mod;
+          // Initialize column sums.
+          int col_sums[3] = {0};
+          for (int c = 0, offset = 0; c < 3; ++c, offset += col_mod)
+          {
+            col_sums[c] += *(src_r0 + offset) > 0;
+            col_sums[c] += *(src_r1 + offset) > 0;
+            col_sums[c] += *(src_r2 + offset) > 0;
+          }
+          for (int c = 0; c < col_steps; ++c,
+               // Advance rows.
+               src_r0 += col_mod, src_r1 += col_mod, src_r2 += col_mod,
+               // Shift column sums.
+               col_sums[0] = col_sums[1],
+               col_sums[1] = col_sums[2],
+               col_sums[2] = (*(src_r0 + plus_2_col) > 0) +
+                             (*(src_r1 + plus_2_col) > 0) +
+                             (*(src_r2 + plus_2_col) > 0),
+               dst_px += col_mod)
+          {
+            const int pixel_sum = (*src_r1 > 0) + col_sums[1] + (*(src_r1 + plus_2_col) > 0);
+            *dst_px = (5 == pixel_sum);
+          }
+        }
+        // Just black out border.
+        {
+          uint8_t* dst_px;
+          dst_px = dst_begin;
+          for (int c = 0; c < cols; ++c, dst_px += col_mod) { *dst_px = 0; }
+          dst_px = dst_begin + ((rows - 1) * row_mod);
+          for (int c = 0; c < cols; ++c, dst_px += col_mod) { *dst_px = 0; }
+          dst_px = dst_begin;
+          for (int r = 0; r < rows; ++r, dst_px += row_mod) { *dst_px = 0; }
+          dst_px = dst_begin + row_mod - col_mod;
+          for (int r = 0; r < rows; ++r, dst_px += row_mod) { *dst_px = 0; }
+        }
+      }
+      #})
+  ())
+
+#? (erode-test)
+;; Visual test of erosion.
+(de erode-test ()
+  (let* ((img-dim 300)
+         (img       (ubyte-matrix img-dim img-dim))
+         (img-erode (ubyte-matrix img-dim img-dim))
+         (scale 1))
+    ;; Generate a random image.
+    (idx-bloop ((img-r img)) (idx-bloop ((px img-r)) (px (to-int (+ (rand) 0.1)))))
+    (for (i 1 2) (ubim-dilation img 1))
+    (erode img img-erode)
+    (if (= () window) (new-window 640 480))
+    (cls)
+    (gray-draw-matrix 0                 0 img       0 1 scale scale)
+    (gray-draw-matrix (* scale img-dim) 0 img-erode 0 1 scale scale))
+  ())
+
+(dhc-make-with-c++ () ()
+  double-inf
+  float-inf
+  quaternion2matrix
+  erode
+  )
+

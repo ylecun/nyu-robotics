@@ -533,7 +533,7 @@
 (de cost-map2rgb (max-cost cm cm-rgb)
   ((-float-) max-cost)
   ((-obj- (cost-map)) cm)
-  ((-idx3- (-int-)) cm-rgb)
+  ((-idx3- (-ubyte-)) cm-rgb)
   (idx-bloop ((cost-r :cm:data) (cost-rgb-r cm-rgb))
     (idx-bloop ((cost cost-r) (cost-rgb cost-rgb-r))
       (if (not (= @COST_MAP_INF_COST (cost 0)))
