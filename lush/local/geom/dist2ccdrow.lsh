@@ -16,8 +16,12 @@
 ;;    the coordinate returned would be on the CCD for any value 
 ;;    from zero +/- 239.5.
 ;; 2) the coordinate is not rounded to the nearest pixel, or bounds-checked;
-;;    if the coordinate exceeds (<ccd-nrows - 1>) / 2, then the object's base
-;;    is outside the field of view because it is too close to the camera.
+;;    - if the coordinate exceeds (<ccd-nrows - 1>) / 2, then the object's base
+;;      is outside the field of view because it is too close to the camera
+;;      (for the values above, 39 centimeters is slightly too close).
+;;    - objects at great distances (e.g. 100 meters or more) are about 41 pixels
+;;      below the CCD's center -- most of the CCD's lower half is above the
+;;      horizon.
 (de dist2ccdrow (x) 
   (/ (* ccd-nrows (* f (tan (- (/ 90 rad2deg) (+ (/ beta rad2deg) (atan (/ x h))))))) ccd-height))
 
