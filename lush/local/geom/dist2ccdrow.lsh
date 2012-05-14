@@ -1,0 +1,23 @@
+(defparameter rad2deg 57.2957795)
+
+;; parameters will need measurement/tweaking for a given camera model and mounting
+(defparameter beta 5)					;; focal center of camera is beta degrees below horizontal
+(defparameter f 1)						;; focal length of camera in cm
+(defparameter h 24)						;; height of camera lens in cm
+(defparameter ccd-nrows 480)	;; number of pixel rows in the CCD
+(defparameter ccd-height 1)   ;; height of the CCD
+
+#? (dist2ccdrow <x>)
+;; computes which row of the CCD the base of an object appears on, 
+;; given the distance to that object.
+;; NOTES:
+;; 1) the coordinate returned is the "CCD pixel distance" above
+;;    or below the center of the CCD, so for a 480-pixel-high CCD,
+;;    the coordinate returned would be on the CCD for any value 
+;;    from zero +/- 239.5.
+;; 2) the coordinate is not rounded to the nearest pixel, or bounds-checked;
+;;    if the coordinate exceeds (<ccd-nrows - 1>) / 2, then the object's base
+;;    is outside the field of view because it is too close to the camera.
+(de dist2ccdrow (x) 
+  (/ (* ccd-nrows (* f (tan (- (/ 90 rad2deg) (+ (/ beta rad2deg) (atan (/ x h))))))) ccd-height))
+
