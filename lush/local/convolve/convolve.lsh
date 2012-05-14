@@ -332,7 +332,10 @@
 (eval `(de convolve-dummy () ,(list 'cpheader blas-includes) ()))
 
 
-(let ((dhc-make-lushflags (concat dhc-make-lushflags openmp-cflags)))
+(let ((dhc-make-lushflags 
+       (if no-openmp 
+	   dhc-make-lushflags
+	 (concat dhc-make-lushflags openmp-cflags))))
 (dhc-make-with-libs
  ()
  blas-libs
