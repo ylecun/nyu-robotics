@@ -9,41 +9,382 @@
 (libload "libidx/idx-float")
 (libload "pcloud/pcloud")
 
-#?(pcloud-rgbrcdxyz2rgbxyz <rgb> <rcd> <xyz> <rgbxyz>)
-;;<rgbxyz> defined as <height>X<width>X<7> 
-;;data saved as (valid-bit r g b x y z)
-(de pcloud-rgbrcdxyz2rgbxyz (rgb rcd xyz rgbxyz)
-  ((-idx2- (-float-)) rgb rcd xyz)
+
+#? kinect-R
+;;
+;;
+(defparameter kinect-R [f 9.9984628826577793e-01  1.2635359098409581e-03 -1.7487233004436643e-02
+                         -1.4779096108364480e-03  9.9992385683542895e-01 -1.2251380107679535e-02 
+                          1.7470421412464927e-02  1.2275341476520762e-02  9.9977202419716948e-01 ])
+
+
+#? kinect-T
+;;
+;;
+(defparameter kinect-T [f 1.9985242312092553e-02  -7.4423738761617583e-04  -1.0916736334336222e-02])
+
+
+#? kinect-xyz2rc
+;; parameters to transform xyz coordinates to row-colum data in rgb
+;; First, XYZ' = R.XYZ + T
+;; Then,
+;; [fx_rgb fy_rgb cx_rgb cy_rgb]
+;; numbers are from http://nicolas.burrus.name/index.php/Research/KinectCalibration
+;; Using formula:
+;; r = (x*fx_rgb/z) + cx_rgb
+;; c = (y*fy_rgb/z) + cy_rgb
+;;(defparameter kinect-xyz2rc [f 5.2921508098293293e+02 5.2556393630057437e+02 3.2894272028759258e+02 2.6748068171871557e+02])
+(defparameter kinect-xyz2rc [f 525.122646 523.155719 305.359103 261.751433])
+
+#?(pcloud-xyz2rc <xyz> <rc> <kinect-R> <kinect-T> <kinect-xyz2rc>)
+;; <rc> defiend as <n>X<2>
+;; data saved as (r c)
+;; function return <rcxyz> 
+;; defined as <n>X<5> 
+;; data saved as (r c x y z)
+(de pcloud-xyz2rc (xyz rc pr pt pxyz2rc)
+  ((-idx2- (-float-)) rc xyz)
+  ((-idx1- (-float-)) pr pt pxyz2rc)
+  (setq rc (float-matrix (idx-dim xyz 0) 2)) 
+  (let ((xyz2 (idx-copy xyz))
+	(rcxyz (float-matrix (idx-dim xyz 0) 5)))
+    (idx-bloop ((xyz2 xyz2)(xyz xyz)(rc rc)(rcxyz rcxyz))
+      (xyz2 0 (+ (* (xyz 0) (pr 0))
+		 (* (xyz 1) (pr 1))
+		 (* (xyz 2) (pr 2))
+		 (pt 0)))
+      (xyz2 1 (+ (* (xyz 0) (pr 3))
+		 (* (xyz 1) (pr 4))
+		 (* (xyz 2) (pr 5))
+		 (pt 1)))
+      (xyz2 2 (+ (* (xyz 0) (pr 6))
+		 (* (xyz 1) (pr 7))
+		 (* (xyz 2) (pr 8))
+		 (pt 2)))
+      (rc 1 (to-int (+ (/ (* (xyz2 0) (pxyz2rc 0)) (xyz2 2)) (pxyz2rc 2))))
+      (rc 0 (to-int (+ (/ (* (xyz2 1) (pxyz2rc 1)) (xyz2 2)) (pxyz2rc 3))))
+      (rcxyz 0 (rc 0))
+      (rcxyz 1 (rc 1))
+      (rcxyz 2 (xyz 0))
+      (rcxyz 3 (xyz 1))
+      (rcxyz 4 (xyz 2)))
+    rcxyz)
+)
+
+
+;;
+;;
+(de pcloud-display-rcxyzrgb (rcxyz image)
+  (let* ((xxmax 640)
+	 (yymax 480)
+	 (im (ubyte-matrix yymax xxmax 3)))
+    (idx-bloop ((rcxyz rcxyz))
+      (let ((xx (rcxyz 1))
+	    (yy (rcxyz 0))
+	    (zz (rcxyz 4)))
+	;;(print xx yy zz)
+	(when (and (< xx xxmax) (>= xx 0) (< yy yymax) (>= yy 0))
+111	  (im yy xx 0 (+ (image yy xx 0) (* zz 0)))
+	  (im yy xx 1 (+ (image yy xx 1) (* zz 0)))
+	  (im yy xx 2 (+ (image yy xx 2) (* zz 0))))
+	))
+    im)
+)
+
+
+#?(rcdrgbxyz2rgbxyz <rcd> <rgb> <xyz>)
+;;return correspoded rc based rgbxyz
+;;<w>X<h>X<7> [valid-bit r g b x y z]
+(de rcdrgbxyz2rgbxyz (rcd rgb xyz)
+  ((-idx2- (-float-)) rcd rgb xyz)
+  (let ((rgbxyz (float-matrix 480 640 7)))
+    (idx-bloop ((rgbxyz rgbxyz))
+      (idx-bloop ((rgbxyz rgbxyz))
+	(rgbxyz 0 0)))
+    (idx-bloop ((rcd rcd)(rgb rgb)(xyz xyz))
+      (rgbxyz (rcd 0) (rcd 1) 0 1)
+      (rgbxyz (rcd 0) (rcd 1) 1 (rgb 0))
+      (rgbxyz (rcd 0) (rcd 1) 2 (rgb 1))
+      (rgbxyz (rcd 0) (rcd 1) 3 (rgb 2))
+      (rgbxyz (rcd 0) (rcd 1) 4 (xyz 0))
+      (rgbxyz (rcd 0) (rcd 1) 5 (xyz 1))
+      (rgbxyz (rcd 0) (rcd 1) 6 (xyz 2)))
+    rgbxyz)
+)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? (pcloud-xyz2map <xyz> <rgb> <map> <cx> <cy> <cangle> <sx> <sy> <robot-height>)
+;; computes a grid map of point-cloud features <map> from 
+;; a point cloud <xyz> and <rgb>. <map> must be an <nrow>x<ncol>x<3>
+;; idx3 of floats. For each cell, element 0 is the number of points
+;; in the cell, element 1 is the sum of the heights of the points
+;; (z coordinate), and element 2 is the sum of the squares of the 
+;; heights of the points. The robot is at the bottom of the map,
+;; with the X axis going up, and the Y axis going right.
+;; <cx> <cy>: are the row and column indices of the robot
+;; in the map. <sx> and  <sy> are the size of the grid cell.
+;; <robot-height> is the height of the robot. Any point
+;; above that height is ignored.
+;; Update: Add angle display ability! <cangle> is the angle of robot
+(de pcloud-xyz2map (xyz rgb mp cx cy ca sx sy robot-height)
+  ((-float-) cx cy sx sy ca robot-height)
+  ((-idx2- (-float-)) xyz rgb)
+  ((-idx3- (-float-)) mp)
+  (let ((xmax (idx-dim mp 0))
+	(ymax (idx-dim mp 1))
+	(sx1 (/ -1.0 sx))
+	(sy1 (/ 1.0 sy)))
+    (idx-bloop ((xyz xyz) (rgb rgb))
+      ;; compute row and col
+      (let* ((z (xyz 2))
+	     ;;rotate coordinate
+	     (a2 (* ca (/ 3.14 180)))
+	     (x2 (- (* (xyz 0) (cos a2)) (* (xyz 1) (sin a2))))
+	     (y2 (+ (* (xyz 0) (sin a2)) (* (xyz 1) (cos a2))))
+	     ;;move base point
+	     (xx (+ cx (* x2 sx1)))
+	     (yy (+ cy (* y2 sy1)))
+	     (ixx (int xx))
+	     (iyy (int yy)))
+	(when (and (>= xx 0) (< xx xmax) (>= yy 0) (< yy ymax) (< z robot-height))
+	  ;; number of points
+	  (mp ixx iyy 0 (+ (mp ixx iyy 0) 1))
+	  ;; mean height
+	  (mp ixx iyy 1 (+ (mp ixx iyy 1) z))
+	  ;; mean square height
+	  (mp ixx iyy 2 (+ (mp ixx iyy 2) (* z z))))))
+    ()))
+
+
+#? (map2cost <map> <costmap> <default-cost>)
+;; Computed a cost/confidenc map <costmap> from
+;; a pointcloud feature map <map>. This assumes
+;; that <map> is an <sx>x<sy>x<3> array of floats,
+;; where each cell contains the number of points
+;; that falss in the cell, the sum of the heights 
+;; of the points, and the sum of the squares of the
+;; heights. <costmap> is a <sx>x<sy>x<2> array of
+;; floats containing for each cell a cost and a confidence
+;; (which is 0 for empty cells, and 1 for cells in
+;; which the cost is known with confidence).
+;; Empty cells are given the cost <default-cost>.
+(de map2cost (mp im default-cost)
+  ((-idx3- (-float-)) mp)
+  ((-idx3- (-float-)) im)
+  ((-float-) default-cost)
+  (let ((v 0))
+    (idx-bloop ((mp mp) (im im))
+      (idx-bloop ((mp mp) (im im))
+	(if (= 0.0 (mp 0));;no point
+	    (progn (im 0 default-cost)  (im 1 0))
+	  (im 0 (/ (- (mp 1)) (mp 0)));;mean z and turn z to up
+	  (im 1 (min 1.0 (* (mp 0) 100))))))) ())
+
+
+#? (costmap2image <costmap> <images> <max-cost>)
+;; transforms a costmap into a displayable RGB image.
+;; cells with zero confisence are mapped to blue,
+;; Cells with non-zero confidence are mapped to black
+;; for cost 0 and white for cost <max-cost>.
+ (de costmap2image (mp im vv)
+  ((-idx3- (-float-)) mp)
+  ((-idx3- (-ubyte-)) im)
+  ((-float-) vv)
+  (let ((v 0))
+    (idx-bloop ((mp mp) (im im))
+      (idx-bloop ((mp mp) (im im))
+	(if (= 0.0 (mp 1));;no point draw blue
+	    (progn (im 0 0) (im 1 0) (im 2 200))
+	  (if (= 10 (mp 1));;path draw red
+	      (progn (im 0 200) (im 1 0) (im 2 0))
+	    (setq v (min 255 (max 0 (* (/ 255 vv) (mp 0)))))
+	    (im 0 v) (im 1 v) (im 2 v)))))))
+
+#? (display-costmap <x> <y> <costmap> <zoom>)
+;; display a costmap at position <x><y> with <zoom>
+;; factor in the current window.
+(de display-costmap (x y mp zoom)
+  (let ((im (ubyte-matrix (idx-dim mp 0) (idx-dim mp 1) 3)))
+    (costmap2image mp im 0.2)
+    (rgb-draw-matrix x y im zoom zoom)))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+#? (add-safe-margin <costmap>)
+;;
+;;
+(de add-safe-margin (cp)
+  ((-idx3- (-float-)) cp)
+  (let ((xmax (1- (idx-dim cp 0)))
+	(ymax (1- (idx-dim cp 1)))
+	(source (idx-clone cp))
+	(index 6))
+    (while (> index 0)
+      (for (x 1 (1- xmax))
+	   (for (y 1 (1- ymax))
+		(let ((up 0)(down 0)(right 0)(left 0)(num 5))
+		  ;;Up 
+		  (if (<= y -1)
+		      (progn (setq up 0) (setq num (1- num)))
+		    (setq up (source x (1- y) 0)))
+		  ;;Down 
+		  (if (>= y ymax)
+		      (progn (setq down 0) (setq num (1- num)))
+		    (setq down (source x (1+ y) 0)))
+		  ;;Left
+		  (if (<= x -1)
+		      (progn (setq left 0) (setq num (1- num)))
+		    (setq left (source (1- x) y 0)))
+		  ;;Right 
+		  (if (>= x xmax)
+		      (progn (setq right 0) (setq num (1- num)))
+		    (setq right (source (1+ x) y 0)))
+		  (cp x y 0 (/ (+ up down left right (cp x y 0)) num))
+		  ;;(print (cp x y 0))
+		)))
+      (setq index (1- index))))
+)
+	      
+
+
+
+#? (costmap2planning <costmap> <threshold> <goal_x> <goal_y> <direction>)
+;;
+;;
+(de costmap2planning (mp threshold gx gy)
+  ((-idx3- (-float-)) mp)
+  ;;((-idx3- (-int-)) path)
+  ((-float-) threshold)
+  ((-int-) gx gy)
+  (let ((cmp (float-matrix (idx-dim mp 0) (idx-dim mp 1))))
+    (idx-bloop ((mp mp) (cmp cmp))
+      (idx-bloop ((mp mp) (cmp cmp))
+	(if (= (mp 1) 0.0)
+	    (cmp 100) 
+	  (if (< (mp 0) threshold)
+	      (cmp (min 255 (max 0 (* (/ 255 0.2) (mp 0)))))
+	    (cmp (min 255 (max 0 (* (/ 255 0.2) (mp 0)))))
+	    ()))))
+    (setq gm (new grid-map cmp))
+    (let ((grid :gm:grid))
+      (setq best-path 
+	    (astar (grid 92 50) (grid gx gy))))
+    ;;(print "planning finished")
+    ;;(pause 1)
+    ;;(==> gm display 640 220 2)
+    ;;Linear least squares
+    (let* ((x 0) (y 0) (xy 0) (x2 0) (imax 10) (dr 0.0))
+      (if (> imax (length best-path))
+	  (setq imax (length best-path)))
+      (for (i 0 imax)
+	   (setq n (nth i best-path))
+	   (setq x (+ x :n:x))
+	   ;;(print x)
+	   (setq y (+ y :n:y))
+	   ;;(print y)
+	   (setq xy (+ xy (* :n:x :n:y)))
+	   (setq x2 (+ x2 (* :n:x :n:x)))
+	   (mp :n:x :n:y 1 10))
+      (setq dr (/
+	       (- (* x y) (* imax xy))
+	       (- (* x x) (* imax x2))))
+      ;;(print dr)
+      dr))
+)
+
+#? (get-lowest <rgbxyz>)
+;
+;
+(de get-lowest (rgbxyz)
   ((-idx3- (-float-)) rgbxyz)
-  (idx-bloop ((rgb rgb)(rcd rcd)(xyz xyz))
-    ;;1 for vaild data
-    (rgbxyz (rcd 0) (rcd 1) 0 1)
-    ;;r
-    (rgbxyz (rcd 0) (rcd 1) 1 (rgb 0))
-    ;;g
-    (rgbxyz (rcd 0) (rcd 1) 2 (rgb 1))
-    ;;b
-    (rgbxyz (rcd 0) (rcd 1) 3 (rgb 2))
-    ;;x
-    (rgbxyz (rcd 0) (rcd 1) 4 (xyz 0))
-    ;;y
-    (rgbxyz (rcd 0) (rcd 1) 5 (xyz 1))
-    ;;z
-    (rgbxyz (rcd 0) (rcd 1) 6 (xyz 2)))
+  (let ((map (float-matrix 1000 1000 3)) ;;resolution 0.01m
+	(lxyz (float-matrix (idx-dim rgbxyz 7))))
+    (idx-bloop ((map map))
+      (idx-bloop ((map map))
+	(map 1000)))
+    (idx-bloop ((rgbxyz rgbxyz))
+      (idx-bloop ((rgbxyz rgbxyz))
+      (let ((ixx (int (+ 500 (* 100 (rgbxyz 4)))))
+	    (iyy (int (+ 500 (* 100 (rgbxyz 5)))))
+	    (z (- (rgbxyz 6))))
+	(if (< z (map ixx iyy))
+	    (progn 
+	      (map ixx iyy 2 z)
+	      (map ixx iyy 0 1))))))
+    (idx-bloop ((map map))
+      (idx-bloop ((map map))
+	()))))
 )
 
 
 
+#? (mark-ground <xyz> <rcd> <image> <threshold> <robot-height>)
+;
+;
+(de mark-ground (xyz rcd image th rh)
+  ((-float-) th rh)
+  ((-idx2- (-float-)) xyz rcd)
+  ((-idx3- (-ubyte-)) image)
+  (let* ((imax (idx-dim xyz 0))
+	 (newimage (idx-copy image)))
+    ;;(print imax)
+    (for (i 0 (1- imax))
+	 (let* ((z 0)
+	       (xx 0)
+	       (yy 0))
+	   (setq z (+ rh (- (xyz i 2))))
+	   (setq xx (rcd i 1))
+	   (setq yy (rcd i 0))
+	   (if (< z th)
+	       (newimage yy xx 1 0))))
+    newimage)
+)
 
 
 
+  
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(dhc-make 
+ ()
+ pcloud-xyz2rc
+ rcdrgbxyz2rgbxyz
+ pcloud-xyz2map
+ map2cost
+ costmap2image
+ mark-ground
+)
 
 
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(dhc-make 
- ()
- pcloud-rgbrcdxyz2rgbxyz
-)
+(de rcxyzrgb-test ()
+  (libload (concat thisdir "/../freenect/freenect"))
+  (when (not window) (new-window 0 0 1280 480 "rcrgb"))
+  (let* ((q (new freenect 0))
+	 (d (float-matrix 480 640))
+	 (rc (float-matrix 307200 2))
+	 (rgb (float-matrix 307200 3))
+	 (rcd (float-matrix 307200 3))
+	 (cxyz (float-matrix 307200 3))
+	 (vxyz (float-matrix 307200 3))
+	 (stop ())
+	 (dx 100)
+	 (dy 500)
+	 (cx 0.1)
+	 (cy -0.1)
+	 (zoom 300)
+	 (cv 0) (cd 0))
+    (==> q update)
+    (setq cv :q:rgb-frames)
+    (setq cd :q:depth-frames)
+    (while (not stop)
+      (==> q update)
+      (let ((image (==> q get-rgb))
+	    (rawd (==> q get-depth)))
+	(rgb-draw-matrix 0 0 rawd)
+	(pcloud-image2rcdrgb image rawd 2000 rcd rgb)
+	(pcloud-rcd2xyz rcd cxyz kinect-d2m kinect-rcd2xyz identity)
+	(process-depth rawd d)
+	(rgb-draw-matrix 640 0 (pcloud-display-rcxyzrgb (pcloud-xyz2rc cxyz rc kinect-R kinect-T kinect-xyz2rc) image))
+	(setq cv :q:rgb-frames)
+	(setq cd :q:depth-frames)))))
