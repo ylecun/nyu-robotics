@@ -37,6 +37,7 @@ cd
 cd nyu-robotics/lush
 ./configure
 make
+echo "(load \"/home/$USER/nyu-robotics/lush/etc/lush.el\")" >> /home/$USER/.emacs
 cd
 mkdir bin
 cd bin
