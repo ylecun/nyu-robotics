@@ -1,0 +1,26 @@
+;; 
+;;
+;;
+;;
+;; Extra roomba drive functions
+;;
+;;
+;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+#? (drive <roomba> <direction>)
+;;
+;;
+(de drive (rb dr)
+  ((-float-) dr)
+  (let* ((mid 0.59)
+	 (turn (* 500 (- dr mid))))
+    (print dr turn)
+    (when rb
+    (if (and (> turn -10) (< turn 10))
+	(==> rb forward-at 100)    
+      (if (< turn -10) (==> rb drive 20 0))
+      (if (> turn 10) (==> rb drive -20 0))))
+  ())
+)
