@@ -14,6 +14,10 @@
 ;; atlas:          CRASHES
 ;; mkl:            can't find some functions definitions (need to fix library list)
 
+;; results on Asus Eee PC 1215N for (blas-test 500 100)
+;; openblas-netbook-prebuilt:
+;;                 real time = 8.829, mega-multiply-accumulate/s = 1415.7889
+
 (when (not no-openmp) (libload "openmp"))
   
 (when (not mkl-path) (defparameter mkl-path "/opt/intel/mkl"))
@@ -45,6 +49,17 @@
   (defparameter blas-libs 
     (all ((x '("libopenblas.so"))) (concat blas-libdir "/" x)))
   (defparameter blas-includedir "/usr/local/include")
+  (defparameter blas-includes 
+    (sprintf "#include <math.h>\n#include \"%s/cblas.h\"\n" blas-includedir))
+  )
+ ((or (= blas-type "openblas-netbook-prebuilt") 
+      (and (not blas-type) (filep "/home/turtlebot/nyu-robotics/lib/OpenBLAS/lib/libopenblas.so")))
+  (defparameter blas-type "openblas-netbook-prebuilt")
+  (printf "found prebuilt netbook installation of OpenBLAS\n")
+  (defparameter blas-libdir "/home/turtlebot/nyu-robotics/lib/OpenBLAS/lib")
+  (defparameter blas-libs 
+    (all ((x '("libopenblas.so"))) (concat blas-libdir "/" x)))
+  (defparameter blas-includedir "/home/turtlebot/nyu-robotics/lib/OpenBLAS/include")
   (defparameter blas-includes 
     (sprintf "#include <math.h>\n#include \"%s/cblas.h\"\n" blas-includedir))
   )
