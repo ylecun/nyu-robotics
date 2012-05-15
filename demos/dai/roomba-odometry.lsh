@@ -10,10 +10,13 @@
 
 (libload "roomba/roomba")
 (libload "opencv2/cv-surf")
+(libload "opencv2/cv-kalmanfilter")
+(libload "libnum/linalgebra")
+(libload "idx-double")
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;(defconstant gyro-calibration 150)
+
 
 #?
 ;;
@@ -35,13 +38,25 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defclass odometry object
   node-list
+  kf
+  measurements
 )
 
-
-(defmethod odometry odometry (px py pa)
+#? (odometry <x> <y> <head-angle> <fusion-mode>)
+;;
+;;
+(defmethod odometry odometry (px py pa fn)
   (setq node-list ())
-  (let ((node (new odometry-node px py pa)))
-      (setq node-list (cons node node-list))) 
+  (let ((node (new odometry-node px py pa))
+	(H (float-matrix 2 2))
+	(num 0))
+    (if (= fn 0) (setq num 1)
+      (setq num 2))
+    (setq kf (new kalmanfilter 2 num))
+    (setq measurements (float-matrix num 1))
+    (progn (H 0 0 1) (H 1 0 1) (H 1 0 0) (H 1 0 1))
+    (==> kf set-transition-matrix H)
+    (setq node-list (cons node node-list))) 
 )
 
 
@@ -83,11 +98,7 @@
   (==> rb read-sensors 0)
   (let* ((angle (==> rb angle))
 	 (distance (==> rb distance))
-	 (new-node ())
-	 (last-node (car node-list))
-	 (xx :last-node:x)
-	 (yy :last-node:y)
-	 (aa :last-node:angle))
+	 (data (float-matrix 2)))
     ;;normalize to signed int
     (setq distance 
 	  (if (> distance 32767) 
@@ -100,14 +111,9 @@
     ;;normalize to degree
     (setq angle (double (/ (* angle 360) 258)))
     ;;(print angle distance)
-    (print xx yy aa)
-    (setq new-node (new odometry-node 
-			(+ xx (* distance (cos (* (/ angle 180) 3.14))))
-			(+ yy (* distance (sin (* (/ angle 180) 3.14))))
-			(+ aa angle)))
-    (setq node-list (cons new-node node-list))
-    ;;(print (length node-list))
-  ())
+    (data 0 angle)
+    (data 1 distance)
+  data)
 )
   
 
@@ -116,42 +122,86 @@
 ;;
 (defmethod odometry gyro-update (rb)
   (==> rb read-sensors 6)
-  (let* ((rotation (==> rb analog-signal)))
-    (setq rotation (/ rotation gyro-const))
+  (let* ((rotation (==> rb analog-signal))
+	 (gyro-const 796.81) ;;13.9
+	 (gyro-init 535) ;;517
+	 (data (float-matrix 2)))
+    (setq rotation (/ (- rotation gyro-init) gyro-const))
     (print rotation)
-    ())
+    (data 0 rotation)
+    (data 1 0)
+    data)
 )  
 
 
-
+;; Video odometry still under test, use with caution
 #? (odometry vo-surf-update <image> <image-old> <rgbxyz>) 
 ;; Video odometry using surf algorithm
-;;
+;; 
 (defmethod odometry vo-surf-update (image image-old rgbxyz)
   (let* ((matched (surf-match image image-old 400))
 	 (n (idx-dim matched 0))
-	 (angle 0))
+	 (xy1 (double-matrix n 2))
+	 (xy2 (double-matrix n 2))
+	 (index 0)
+	 (angle 0)
+	 (r (double-matrix 2 2))
+	 (t (double-matrix 2))
+	 (data (float-matrix 2)))
     (idx-bloop ((matched matched))
       (let ((x1 (rgbxyz (matched 1) (matched 0) 4))
 	    (y1 (rgbxyz (matched 1) (matched 0) 5))
-	    (z1 (rgbxyz (matched 1) (matched 0) 6))
 	    (x2 (rgbxyz (matched 3) (matched 2) 4))
 	    (y2 (rgbxyz (matched 3) (matched 2) 5))
-	    (z2 (rgbxyz (matched 3) (matched 2) 6)))
-	(if (or (= 0 (matched 0)) (<> z1 z2)) 
+	    (e (abs (- (matched 0) (matched 2)))))
+	(if (or (= 0 (matched 0)) (> e 50)) 
 	    (setq n (1- n))
-	  (let* ((dist1 (sqrt (+ (* x1 x1) (* y1 y1) (* z1 z1))))
-		 (dist2 (sqrt (+ (* x2 x2) (* y2 y2) (* z2 z2))))
-		 (temp (/ (+ (* x1 x2) (* y1 y2) (* z1 z2)) (* dist1 dist2))))
-	  ;;(print dist1 dist2 )
-	  ;;(print (/ (+ (* x1 x2) (* y1 y2) (* z1 z2)) (* dist1 dist2)))
-	    (setq angle (+ angle temp))
-	    ()))))
-    (if (= n 0)
-	(progn (print "error") (setq angle 0))
-      (setq angle (* 180 (acos (/ angle n)))))
-    angle)
+	  (xy1 index 0 x1)
+	  (xy1 index 1 y1)
+	  (xy2 index 0 x2)
+	  (xy2 index 1 y2)
+	  (setq index (1+ index)))))
+    (idx-d2resize xy1 n 2)
+    (idx-d2resize xy2 n 2)
+    (match-registration xy1 xy2 r t)
+    ;;(pretty r)
+    ;;(print (* (acos (r 0 0)) (/ 180 3.14)))
+    (data 0 (acos (r 0 0)))
+    )
 )
+
+
+
+#? (odometry update <wh-data> <gy-data> <vo-data>)
+;;
+;;
+(defmethod odometry update (wh-data gy-data vo-data)
+  ;;((-idx1- (-float-)) wh-data gy-data vo-data)
+  (let* ((new-node ())
+	 (last-node (car node-list))
+	 (xx :last-node:x)
+	 (yy :last-node:y)
+	 (aa :last-node:angle)
+	 (dist 0)
+	 (angl 0)
+	 (current ()))
+    (if gy-data (measurements 0 0 (gy-data 0)))
+    (if vo-data (measurements 1 0 (vo-data 0)))
+    ;;(pretty measurements)
+    (==> kf update-measurement measurements)
+    (setq current (==> kf get-predict))
+    (pretty current)
+    (current 0 0 (+ (gy-data 0)(current 0 0)))
+    (setq angl (current 0 0))
+    (setq dist (wh-data 1))
+    (setq new-node (new odometry-node 
+			(+ xx (* dist (cos angl)))
+			(+ yy (* dist (sin angl)))
+			(+ aa angl)))
+    (setq node-list (cons new-node node-list))
+    ())
+)
+
 
 
 #? (odometry display <dx> <dy>) 
@@ -160,19 +210,22 @@
 (defmethod odometry display (dx dy)
   ((-int-) dx dy)
   (let ((node ())
+	(xsize 640)
+	(ysize 480)
 	(last-xx 0)
 	(last-yy 0)
-	(zoom 1)
+	(zoom 10)
 	(xx 0)
 	(yy 0))
-    (when (not window) (new-window dx dy 1000 800 "Odometry"))
     (when node-list
-      (cls)
+      ;;(cls)
       (setq node (car node-list))
       (setq xx :node:x)
       (setq yy :node:y)
-      (if (or (> xx 400) (> yy 400) (< xx 0) (< yy 0))
-	  (progn (setq zoom 1) (setq xx (/ xx zoom)) (setq yy (/ yy zoom))))
+      (if (<> zoom 0)
+	  (progn (setq xx (+ (/ xx zoom) dy 240)) (setq yy (+ (/ yy zoom) dx 320))))
+      (print xx yy)
+      (color-rgb 1 0 0)
       (draw-circle yy xx 5)
       (draw-line yy xx (- yy (* 5 (cos (* (/ :node:angle 180))))) (+ xx (* 5 (sin (* (/ :node:angle 180) 3.14)))))
       (setq last-xx :node:x)
@@ -183,15 +236,70 @@
       
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+#? (match-registration <pts-global> <pts-local> <rot-mat> <offset>)
+;; Takes two sets of point correspondences and computes a rigid transformation
+;; that takes each local point to its corresponding global point. When an exact
+;; solution is not possible, a least squares approximation is given.
+(de match-registration (pts-global pts-local rot-mat offset)
+  ((-idx2- (-double-)) pts-global)
+  ((-idx2- (-double-)) pts-local)
+  ((-idx2- (-double-)) rot-mat)
+  ((-idx1- (-double-)) offset)
+  (let ((obs-mat (double-matrix (* 2 (idx-dim pts-global 0)) 4))
+        (b-mat   (double-matrix (* 2 (idx-dim pts-global 0))))
+        (x       (double-matrix-nc 4)))
+    ((-idx1- (-double-)) x)
+    ;; Setup obs-mat from points.
+    (idx-bloop ((obs-x-r (narrow obs-mat 0 (idx-dim pts-global 0) 0))
+                (obs-y-r (narrow obs-mat 0 (idx-dim pts-global 0) (idx-dim pts-global 0)))
+                (b-x-r (narrow b-mat 0 (idx-dim pts-global 0) 0))
+                (b-y-r (narrow b-mat 0 (idx-dim pts-global 0) (idx-dim pts-global 0)))
+                (pt-global pts-global)
+                (pt-local pts-local))
+        (obs-x-r 0 (pt-local 0)) (obs-x-r 1 (- (pt-local 1))) (obs-x-r 2 1) (obs-x-r 3 0)
+        (obs-y-r 0 (pt-local 1)) (obs-y-r 1    (pt-local 0))  (obs-y-r 2 0) (obs-y-r 3 1)
+        (b-x-r (pt-global 0))
+        (b-y-r (pt-global 1)))
+;;    (pretty obs-mat)
+;;    (pretty b-mat)
+    ;; Solve using SVD.
+    (solve-sv-inplace obs-mat b-mat x)
+;;    (pretty x)
+    ;; Set return values.
+    (let ((rot-params (narrow x 0 2 0))
+          (offset-params (narrow x 0 2 2))
+          (rot-norm-sq [d@ 0]))
+      ;; Normalize rotation part and set offset part.
+      (idx-m1dotm1 rot-params rot-params rot-norm-sq)
+      (idx-d1dotc rot-params (/ 1.0 (sqrt (rot-norm-sq))) rot-params)
+      (rot-mat 0 0 (rot-params 0)) (rot-mat 0 1 (- (rot-params 1)))
+      (rot-mat 1 0 (rot-params 1)) (rot-mat 1 1    (rot-params 0))
+      (idx-copy offset-params offset)))
+  ()
+)
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (de odometry-test ()
   (let ((rb (new roomba "/dev/ttyUSB0")))
-  (==> rb drive -50 0)
-  (let ((od (new odometry 50 50 0)))
+  (==> rb drive -10 0)
+  (let ((od (new odometry 50 50 0 2))
+	(kf1 (new kalmanfilter 2 1))
+	(H (float-matrix 2 2))
+	(Z ())
+	(angle 0))
+    (progn (H 0 0 1) (H 0 1 0) (H 1 0 0)(H 1 1 1))
+    (==> kf1 set-transition-matrix H)
     (while 1
-      (==> od gyro-update rb)
+      (setq Z (==> od gyro-update rb))
+      (pretty (==> kf1 get-predict))
+      (==> kf1 update-measurement Z)
+      (setq angle (+ angle (Z 0 0)))
+      (print angle)
       ;;(==> od wheel-update rb)
       ;;(==> od display)
-      (setq angle (==> od get-position-angle))
-      (print angle)
+      ;;(setq angle (==> od get-position-angle))
+      ;;(print angle)
       ())))
 )
