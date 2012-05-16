@@ -1,6 +1,7 @@
-(libload "roomba")
-(libload "../freenect/freenect")
-(libload "../pcloud/pcloud")
+(addpath (concat (getenv "HOME") "/Turtlebot/nyu-robotics/lush/local"))
+(libload "roomba/roomba")
+(libload "freenect/freenect")
+(libload "pcloud/pcloud")
 
 ;; demo of map generated from Kinect.
 ;; By default, this will use a free standing kinect.
