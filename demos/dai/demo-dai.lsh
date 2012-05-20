@@ -69,7 +69,7 @@
 
 #? (demo-dai2)
 ;;Demo 2(vo)
-;;
+;;Unstable :-(
 (de demo-dai2 (&optional roombap)
   (when (not window) (new-window 0 0 1280 480 "asd"))
   (let* ((r (when roombap (new roomba "/dev/ttyUSB0")))
