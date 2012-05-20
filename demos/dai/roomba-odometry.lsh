@@ -42,19 +42,21 @@
   measurements
 )
 
+;;Parameter Matrix for kalman filter
+;;Should be measured accordingly
+(defvar H [f[f 1.0 1.0][f 1.0 0.0]])
+
 #? (odometry <x> <y> <head-angle> <fusion-mode>)
 ;;
 ;;
 (defmethod odometry odometry (px py pa fn)
   (setq node-list ())
   (let ((node (new odometry-node px py pa))
-	(H (float-matrix 2 2))
 	(num 0))
     (if (= fn 0) (setq num 1)
       (setq num 2))
     (setq kf (new kalmanfilter 2 num))
     (setq measurements (float-matrix num 1))
-    (progn (H 0 0 1) (H 1 0 1) (H 1 0 0) (H 1 0 1))
     (==> kf set-transition-matrix H)
     (setq node-list (cons node node-list))) 
 )
@@ -281,25 +283,3 @@
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(de odometry-test ()
-  (let ((rb (new roomba "/dev/ttyUSB0")))
-  (==> rb drive -10 0)
-  (let ((od (new odometry 50 50 0 2))
-	(kf1 (new kalmanfilter 2 1))
-	(H (float-matrix 2 2))
-	(Z ())
-	(angle 0))
-    (progn (H 0 0 1) (H 0 1 0) (H 1 0 0)(H 1 1 1))
-    (==> kf1 set-transition-matrix H)
-    (while 1
-      (setq Z (==> od gyro-update rb))
-      (pretty (==> kf1 get-predict))
-      (==> kf1 update-measurement Z)
-      (setq angle (+ angle (Z 0 0)))
-      (print angle)
-      ;;(==> od wheel-update rb)
-      ;;(==> od display)
-      ;;(setq angle (==> od get-position-angle))
-      ;;(print angle)
-      ())))
-)
