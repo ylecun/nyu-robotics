@@ -393,7 +393,6 @@
          const uint8_t rgb_suppress[3] = {static_cast<uint8_t>(rgb_suppress_data[0] + 0.5f),
                                           static_cast<uint8_t>(rgb_suppress_data[1] + 0.5f),
                                           static_cast<uint8_t>(rgb_suppress_data[2] + 0.5f),};
-         printf("rgb_suppress = (%d, %d, %d)\n", rgb_suppress[0], rgb_suppress[1], rgb_suppress[2]);
          const float color_scale = 1.0f / 255.0f;
          // Sort records in order of traversing map r, c.
          std::sort(rgbBinRecords.begin(), rgbBinRecords.end());

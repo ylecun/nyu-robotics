@@ -82,7 +82,7 @@
 ;; global feature map.
 (defconstant "COST_MAP_GLOBAL_EXP_MOV_AVG_WT" 0.9)
 
-(defconstant "FM_LCL_REGISTRATION_MIN_MATCHES" 12)
+(defconstant "FM_LCL_REGISTRATION_MIN_MATCHES" 6)
 ;; Resample a local feature map by solving a least squares optimization.
 (de fm-local-registration (fm-lcl fm-gbl fm-gbl-cell
                            fm-gbl-feat fm-lcl-feat
@@ -103,7 +103,7 @@
   ;; Find correspondences by looking in a square neighborhood about the image of
   ;; significant features in the global map projected into the local map.
   ;; Define sigificant features by their feature vector
-  ;;   pts mean, pts variance, (TODO) rgb mean, rgb variance
+  ;;   height hist, rgb medians
   (let* (;; General variables.
          (neigh-size (+ (* 2 window-dim) 1))
          (num-pts 0)
@@ -152,6 +152,7 @@
 ;;              (lcl-sum-x (fm-lcl @FEATURE_MAP_SUM_HT))
 ;;              (gbl-sum-xx (fm-gbl @FEATURE_MAP_SUM_HT_SQ))
 ;;              (lcl-sum-xx (fm-lcl @FEATURE_MAP_SUM_HT_SQ))
+              (depth-feat-wt (/ num-feat-rgb num-feat-hist))
               (hist-gbl-denorm (narrow fm-gbl 0 num-feat-hist @FEATURE_MAP_NUM_HT_BIN_BEGIN))
               (hist-lcl-denorm (narrow fm-lcl 0 num-feat-hist @FEATURE_MAP_NUM_HT_BIN_BEGIN))
               (hist-gbl-norm (narrow fm-gbl-feat 0 num-feat-hist num-feat-ht))
@@ -167,11 +168,11 @@
 
           (if (= 0 gbl-num)
             (idx-clear fm-gbl-feat)
-            (idx-f1dotc hist-gbl-denorm (/ num-feat-rgb gbl-num) hist-gbl-norm)
+            (idx-f1dotc hist-gbl-denorm (/ depth-feat-wt gbl-num) hist-gbl-norm)
             (idx-copy hist-gbl-rgb-src hist-gbl-rgb-dst))
           (if (= 0 lcl-num)
             (idx-clear fm-lcl-feat)
-              (idx-f1dotc hist-lcl-denorm (/ num-feat-rgb lcl-num) hist-lcl-norm)
+              (idx-f1dotc hist-lcl-denorm (/ depth-feat-wt lcl-num) hist-lcl-norm)
               (idx-copy hist-lcl-rgb-src hist-lcl-rgb-dst)))))
 ;;    (gray-draw-matrix (:fm-gbl:full-dim 1) (* 2 r) fm-lcl-mask 0 1 1 1)
 ;;    (for (i 0 1)
@@ -202,10 +203,10 @@
 
            ;; Ratio of distance to closest point in global window to norm of
            ;; the global point. Smaller is more permissive.
-           (interest-pt-thresh (* 0.40 0.40))
+           (interest-pt-thresh (* 0.50 0.50))
            ;; Ratio of closest distance to next-closest distance in local
            ;; window. Larger is more permissive.
-           (match-pt-thresh (* 0.60 0.60))
+           (match-pt-thresh (* 0.80 0.80))
 
            (i window-dim) ;; Local map coordinate.
            (j window-dim) ;; Local map coordinate.
@@ -397,17 +398,18 @@
 (defclass feature-map-pyramid object
   scale half-dim levels data)
 
-(defmethod feature-map-pyramid feature-map-pyramid (half-dim-in scale-in levels-in)
+(defmethod feature-map-pyramid feature-map-pyramid (half-dim-in scale-in level-scale levels-in)
   (setq half-dim (idx-copy half-dim-in))
   (setq scale (idx-copy scale-in))
   (setq levels levels-in)
   (setq data (htable levels))
-  (let ((scale-div (idx-copy scale))
-        (half-dim-div (idx-copy half-dim)))
-    (for (i 0 (- levels 1))
-      (half-dim-div 0 (bitshr (half-dim-div 0) i))
-      (half-dim-div 1 (bitshr (half-dim-div 1) i))
-      (idx-f1dotc scale (** 2 i) scale-div)
+  (for (i 0 (- levels 1))
+    (let ((scale-fac (** level-scale i))
+          (half-dim-div (idx-copy half-dim))
+          (scale-div (idx-copy scale)))
+      (half-dim-div 0 (* (half-dim-div 0) (/ 1.0 scale-fac)))
+      (half-dim-div 1 (* (half-dim-div 1) (/ 1.0 scale-fac)))
+      (idx-f1dotc scale-div scale-fac scale-div)
       (let* ((fm  (new feature-map half-dim-div scale-div (+ @FEATURE_MAP_IDX_COUNT 1)))
              (cm  (new cost-map fm))
              (rgb (ubyte-matrix (:cm:full-dim 0) (:cm:full-dim 1) 3)))
@@ -422,10 +424,10 @@
   ;; Create feature, cost, and cost rgb maps.
   (let* ((pyr-levels 2)
          (scale [f 0.08 0.08])
-         (gbl-half-dim [i 150 150])
-         (lcl-half-dim [i 70 70])
-         (fm-gbl-pyr (new feature-map-pyramid gbl-half-dim scale pyr-levels))
-         (fm-lcl-pyr (new feature-map-pyramid lcl-half-dim scale pyr-levels))
+         (gbl-half-dim [i 200 200])
+         (lcl-half-dim [i 80 80])
+         (fm-gbl-pyr (new feature-map-pyramid gbl-half-dim scale 2 pyr-levels))
+         (fm-lcl-pyr (new feature-map-pyramid lcl-half-dim scale 2 pyr-levels))
          (fm-gbl-cell (int-matrix-nc 2))
          (tmr (new stopwatch))
          (rgb-ds-samples (ubyte-matrix-nc 1 3))
@@ -491,6 +493,7 @@
     (idx-m2timesm2 tform-odom-correct tform-odom tform-odom-corrected)
     ;; Compute scene mode to ignore a color.
     (mode-rgb-matrix :tb:camera-rgb-image-color 3 10 rgb-ds-samples rgb-suppress)
+    (printf "rgb-suppress = (%f, %f, %f)\n" (rgb-suppress 0) (rgb-suppress 1) (rgb-suppress 2))
     ;; Register feature maps using visual odometry and pyramid.
     (for (lvl-inv 0 (- pyr-levels 1))
       (let* ((lvl (- pyr-levels lvl-inv 1))
@@ -566,7 +569,8 @@
         (rgb-draw-matrix (idx-dim cm-gbl-rgb 1) draw-r cm-lcl-rgb 1 1)
         (rgb-draw-matrix (:fm-gbl:full-dim 1) (+ draw-r (idx-dim img-dispar 0)) img-dispar 1 1)
         ;; Update draw row.
-        (incr draw-r (:fm-gbl:full-dim 0)))))))
+        (incr draw-r (:fm-gbl:full-dim 0))))))
+  ())
 
 ;;(let ((dhc-make-lushflags (concat dhc-make-lushflags " -fopenmp")))
   (dhc-make-with-c++ () () ;;"/usr/lib/gcc/i486-linux-gnu/4.4/libgomp.so"

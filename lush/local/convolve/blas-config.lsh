@@ -27,6 +27,8 @@
 ;; quickbuild.64bit 
 ;; OR
 ;; make BINARY=64 TARGET=nehalem
+;; OR for Asus Eee PC 1215N,
+;; make BINARY=32 TARGET=nehalem USE_OPENMP=1
 ;; sudo make install PREFIX=/usr/local
 (cond
  ((or (= blas-type "atlas-local") 
