@@ -216,7 +216,7 @@
   (let ((xmax (1- (idx-dim cp 0)))
 	(ymax (1- (idx-dim cp 1)))
 	(source (idx-clone cp))
-	(index 6))
+	(index 10))
     (while (> index 0)
       (for (x 1 (1- xmax))
 	   (for (y 1 (1- ymax))
